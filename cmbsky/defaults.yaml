@@ -1,0 +1,94 @@
+prepare_map:
+    sim_name: "websky"
+    data_dir: "/global/project/projectdirs/act/data/maccrann/websky"
+    lensed_alms_dir: sNone
+    do_cmb: True
+    do_tsz: False
+    do_cib: False
+    do_ksz: False
+    do_radiops: False
+    noise_sigma:
+      - 17.
+      - 17.
+    noise_seed: iNone
+    cmb_seeds: liNone
+    cmb_seed_start: iNone
+    cmb_seed_end: iNone
+    beam_fwhm:
+      - 2.2
+      - 1.4
+    #resolution for output maps
+    res: 0.5
+    freqs:
+      - "0093"
+      - "0145"
+    mlmax: 12000
+    lmax_out: 4000
+    save_maps: False
+    save_fgs_only: False
+
+    #halo masking
+    halo_mask_fgs: False
+    m_min: 1e.15
+    zmax: 4.
+    halo_mask_radius: 10.
+    num_halo: iNone
+
+    #nemo catalog masking
+    nemo_mask_fgs: False
+    nemo_catalog: sNone
+    nemo_snr_min: fNone
+    nemo_mask_radius: 10.
+
+    fg_model_alms: lsNone
+
+    #source masking
+    cib_flux_cut: lfNone
+    flux_cut_freq: liNone
+    radiops_flux_cut: lfNone
+    radio_ps_flux_cut_freq: liNone
+
+    #Set to true to not add
+    #noise to maps
+    disable_noise: True
+
+    fg_model_alms: lsNone
+
+reconstruction:
+    kappa_lmin: 100
+    kappa_lmax: 3000
+    mlmax: 4000
+    tag: 0
+    freqs: lsNone
+    mlmax: iNone
+    cmb_seeds: liNone
+    cmb_seed_start: iNone
+    cmb_seed_end: iNone
+    profile_file: sNone #file with profile
+    nside: 4096
+
+bias:
+    nsim_n0: 10
+    recon_tag: '0'
+    tag: '0'
+    kappa_lmin: iNone
+    kappa_lmax: iNone
+    cmb_seeds: liNone
+    cmb_seed_start: iNone
+    cmb_seed_end: iNone
+    skip_existing: False
+    do_qe: True
+    do_psh: True
+    do_ph: True
+    sim_start: 0
+    freqs: lsNone
+    add_gaussian_fg: True
+    skip_tags: lsNone 
+    
+dory:
+    output: full
+    rsplit: 500
+    nproc: 8
+    dory_tag: 0
+    path: /global/homes/m/maccrann/cmb/lensing/code/tenki/point_sources/dory.py
+    nsigma: 6.
