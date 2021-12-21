@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #Prepare websky alms:
 #- get lensed cmb
@@ -9,7 +9,7 @@ from __future__ import print_function
 import os,sys
 from os.path import join as opj
 from orphics import maps,io,cosmology,stats,pixcov
-from pixell import enmap,curvedsky,utils,enplot
+from pixell import enmap,curvedsky,utils,enplot,reproject
 import numpy as np
 import healpy as hp
 import argparse
@@ -18,7 +18,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from orphics import maps
-from cmbsky import WebSky, SehgalSky, get_disable_mpi, safe_mkdir
+import cmbsky
+from cmbsky import WebSky, SehgalSky, Sehgal10Sky
 import argparse
 import errno
 import yaml
@@ -26,8 +27,11 @@ import shutil
 import time
 from datetime import timedelta
 from collections import namedtuple
+sys.path.append("/global/homes/m/maccrann/cmb/lensing/code/HILC/")
+from HILC.ilc import harmonic_ilc
 
-"""
+change_alm_lmax = futils.change_alm_lmax
+
 def get_disable_mpi():
     try:
         disable_mpi_env = os.environ['DISABLE_MPI']
@@ -35,22 +39,35 @@ def get_disable_mpi():
     except:
         disable_mpi = False
     return disable_mpi
-"""
 
 disable_mpi = get_disable_mpi()
 if not disable_mpi:
     from mpi4py import MPI
 
-"""
 def safe_mkdir(d):
     try:
         os.makedirs(d)
     except OSError as e:
         if e.errno != errno.EEXIST:
             raise(e)
-"""
-with open("defaults.yaml",'rb') as f:
+
+#import pkg_resources
+try:
+  import importlib.resources as importlib_resources
+except ImportError:
+  # In PY<3.7 fall-back to backported `importlib_resources`.
+  import importlib_resources
+  
+#filename = pkg_resources.resource_filename(__name__, 'defaults/defaults.yml')
+#print(filename)
+#stream = pkg_resources.resource_stream(__name__, 'defaults/defaults.yml')
+#print(stream)
+#with open(filename,'rb') as f:
+fname = 'defaults.yaml'
+with importlib_resources.open_binary(cmbsky, fname) as f:
     DEFAULTS=yaml.load(f)
+print(DEFAULTS)
+
         
 def get_config(section='prepare_map'):
     parser = argparse.ArgumentParser(description='Prepare maps')
@@ -67,6 +84,8 @@ def get_config(section='prepare_map'):
             t,val = int, None
         elif val=="fNone":
             t,val = float, None
+        elif val=="sNone":
+            t,val = str, None
         elif val=="liNone":
             t,val,nargs = int,None,'*'
         elif val=="lfNone":
@@ -115,6 +134,55 @@ def get_config(section='prepare_map'):
     #also return the config from the file,
     #and the defaults
     return config_namespace, config_from_file, dict(DEFAULTS)
+
+h=6.62607004e-34
+c=2.99792458e8
+kb = 1.38064852e-23
+T_cmb=2.7255
+
+def write_beam_real(bl, filename,
+                    theta_max_deg=0.5, ntheta=1800):
+    """
+    Convert beam to real space and write to file.
+    Normalize to 1.00 at theta=0.
+    """
+    theta_deg = np.linspace(0.0, theta_max_deg, ntheta)
+    theta_rad = np.radians(theta_deg)
+    btheta = curvedsky.harm2profile(bl, theta_rad)
+    print(btheta.shape)
+    print(btheta[0])
+    btheta /= btheta[0]
+    print(btheta[0])
+    # Solid angle in nsr
+    solidAngle=np.trapz(btheta, np.pi*(theta_rad)**2)*1e9
+    with open(filename, "w") as f:
+        f.write("# solid angle = %.2f nsr\n" % (solidAngle))
+        for t, b in zip(theta_deg, btheta):
+            f.write("%.6f %.6f\n"%(t,b))
+    print("wrote real-space beam to %s"%filename)
+
+def cib_sed(freq, lmax=None, beta=1.2, T_cib=24.):
+    freq = float(freq)*1.e9
+    x = h*freq / kb / T_cmb
+    #print(x)
+    dBdT = 2*h * freq**3 * x * np.exp(x) / c**2 / T_cmb / (np.exp(x)-1)**2
+    #print(dBdT)
+    x_cib = h*freq / kb / T_cib
+    #print(x_cib)
+    return freq**(3+beta) / (np.exp(x_cib) - 1) / dBdT
+
+def response_fnc_cib(qid, lmax=None):
+    return cib_sed(qid)/cib_sed(145.)
+
+def response_fnc_cmb(qid,lmax=None):
+    return 1.
+
+def y_to_deltaToverT(freq):
+    x = float(freq)/56.8
+    return 2.7255 * (x * (np.exp(x)+1)/(np.exp(x)-1) - 4)
+    
+def response_fnc_tsz(qid,lmax=None):
+    return y_to_deltaToverT(float(qid))/y_to_deltaToverT(145.)
 
 from solenspipe import weighted_bin1D
 bin_edges = np.linspace(0,3000,100).astype(int)
@@ -349,11 +417,15 @@ def main():
         
     print('initializing cmbsky')
     if config.sim_name == "websky":
-        cmbsky = WebSky(config.data_dir)
+        cmbsky = WebSky(config.websky_dir)
         #Get kappa alms and save
     elif config.sim_name == "sehgal":
-        cmbsky = SehgalSky(config.dat_dir)
-
+        cmbsky = SehgalSky(config.sehgal_dir)
+    elif config.sim_name == "sehgal10":
+        cmbsky = Sehgal10Sky(config.sehgal10_dir)
+    else:
+        raise ValueError("""sim_name should be websky, sehgal or sehgal10""")
+    
     """
     kappa_alms = cmbsky.get_kappa_alms(lmax=config.lmax_out)
     if rank==0:
@@ -407,19 +479,44 @@ def main():
         safe_mkdir(cmb_seed_output_dir)
 
         #Sort out masking options
+        #For the flux cuts, we can either provide
+        #a single value 
         if config.flux_cut_freq is None:
             flux_cut_freq = config.freqs
-        elif (isinstance(config.flux_cut_freq,float) or isinstance(config.flux_cut_freq,int)):
-            flux_cut_freq = [config.flux_cut_freq]*len(config.freqs)
-        else:
+        elif isinstance(config.flux_cut_freq, list):
             flux_cut_freq = config.flux_cut_freq
+        else:
+            try:
+                float(config.flux_cut_freq)
+            except ValueError as e:
+                print("flux_cut_freq type not recognized")
+                raise e
+            flux_cut_freq = [config.flux_cut_freq]*len(config.freqs)
 
+        print("flux_cut_freq:",flux_cut_freq)
+
+        """
         if config.cib_flux_cut is not None:
             if isinstance(config.cib_flux_cut,float) or isinstance(config.cib_flux_cut,int):
                 config.cib_flux_cut = [config.cib_flux_cut]*len(config.freqs)
         if config.radiops_flux_cut is not None:
             if isinstance(config.radiops_flux_cut,float) or isinstance(config.radiops_flux_cut,int):
                 config.radiops_flux_cut = [config.radiops_flux_cut]*len(config.freqs)
+        """
+
+        sky_alms_list = []
+        fg_alms_list = []
+
+        #check for survey mask
+        if config.survey_mask is not None:
+            survey_mask = enmap.read_map(config.survey_mask)
+            print("converting survey mask to hpix")
+            survey_mask_hpix = reproject.healpix_from_enmap(
+                    survey_mask, config.mlmax, cmbsky.nside
+            )
+        else:
+            survey_mask = None
+            survey_mask_hpix = None
         
         for ifreq,freq in enumerate(config.freqs):
             #Get sky alms
@@ -429,33 +526,102 @@ def main():
                 cmb_unlensed_alms = None
                 cmb_lensed_alms = cmb_alms_true
 
-            if config.fg_model_alms is not None:
-                fg_model_file = config.fg_model_alms[ifreq]
-                fg_model_alms = hp.fitsfunc.read_alm(fg_model_file)
-            else:
-                fg_model_alms = None
-
             #Get mask
+            #The source masking can by 
+            #thresholding and masking each
+            #frequency separately, or by using
+            #the same mask for each frequency (which
+            #is a union of the per-frequency masks).
+            if config.do_union_flux_mask:
+                cib_flux_cut_thisfreq = config.cib_flux_cut
+                radiops_flux_cut_thisfreq = config.radiops_flux_cut
+                flux_cut_freq_thisfreq = flux_cut_freq
+            else:
+                if config.cib_flux_cut is not None:
+                    cib_flux_cut_thisfreq = config.cib_flux_cut[ifreq]
+                else:
+                    cib_flux_cut_thisfreq = None
+                if config.radiops_flux_cut is not None:
+                    radiops_flux_cut_thisfreq = config.radiops_flux_cut[ifreq]
+                else:
+                    radiops_flux_cut_thisfreq = None
+                flux_cut_freq_thisfreq = flux_cut_freq[ifreq]
+                
             fg_mask = cmbsky.get_fg_mask(
                 halo_mask_fgs=config.halo_mask_fgs,
                 m_min=config.m_min, zmax=config.zmax,
                 halo_mask_radius=config.halo_mask_radius,
-                cib_flux_cut=(None if (config.cib_flux_cut is None) else config.cib_flux_cut[ifreq]),
-                radiops_flux_cut=(None if (config.radiops_flux_cut is None) else config.radiops_flux_cut[ifreq]),
-                flux_cut_freq=flux_cut_freq[ifreq],
+                #cib_flux_cut=(None if (config.cib_flux_cut is None) else config.cib_flux_cut[ifreq]),
+                #radiops_flux_cut=(None if (config.radiops_flux_cut is None) else config.radiops_flux_cut[ifreq]),
+                #flux_cut_freq=flux_cut_freq[ifreq],
+                cib_flux_cut = cib_flux_cut_thisfreq,
+                radiops_flux_cut = radiops_flux_cut_thisfreq,
+                flux_cut_freq = flux_cut_freq_thisfreq,
+                nemo_mask_fgs=config.nemo_mask_fgs,
                 nemo_catalog=config.nemo_catalog,
                 nemo_mask_radius=config.nemo_mask_radius,
                 nemo_snr_min=config.nemo_snr_min
             )
+            #Save f_sky masked
+            n=len(fg_mask)
+            f_sky_masked = float(n - fg_mask.sum())/n
+            with open(opj(cmb_seed_output_dir,
+                            "mask_fsky_%s.dat"%freq),
+                      'w') as f:
+                f.write("mask_fsky = %.4e"%f_sky_masked)
+                
             print(type(fg_mask))
+
+            #fg model alms can be supplied either
+            #as map or alms
+            fg_model_alms =  None
+            if config.fg_model_maps is not None:
+                assert config.fg_model_alms is None
+                print("subtracting model map %s"%config.fg_model_maps[ifreq])
+                if isinstance(config.fg_model_maps[ifreq], list):
+                    fg_model_map = enmap.read_map(config.fg_model_maps[ifreq][0])
+                    for f in config.fg_model_maps[ifreq][1:]:
+                        fg_model_map += enmap.read_map(f)
+                else:
+                    fg_model_map = enmap.read_map(config.fg_model_maps[ifreq])
+
+                #If we have a mask, we also need to mask
+                #the foreground model map
+                if not np.all(fg_mask==True):
+                    fg_model_map_hpix = reproject.healpix_from_enmap(
+                    fg_model_map, config.mlmax, cmbsky.nside)
+                    fg_model_map_hpix *= fg_mask
+                    fg_model_alms_beamed = hp.map2alm(
+                        fg_model_map_hpix,
+                        lmax=config.mlmax)
+                else:
+                    fg_model_alms_beamed = curvedsky.map2alm(fg_model_map)
+                
+                unbeam_fn = lambda x: 1./maps.gauss_beam(x, config.beam_fwhm[ifreq])
+                fg_model_alms = curvedsky.almxfl(fg_model_alms_beamed, unbeam_fn)
+
+            if config.fg_model_alms is not None:
+                assert np.all(fg_mask==True)
+                fg_model_file = config.fg_model_alms[ifreq]
+                fg_model_alms = hp.fitsfunc.read_alm(fg_model_file)
 
             sky_dict = cmbsky.get_sky(
                 cmb = config.do_cmb, freq = freq, cib = config.do_cib,
                 tsz = config.do_tsz, ksz = config.do_ksz,
                 radiops = config.do_radiops,
                 cmb_unlensed_alms = cmb_unlensed_alms,
-                lmax=config.mlmax, fg_model_alms=fg_model_alms,
-                fg_mask=fg_mask)
+                lmax=config.mlmax,
+                fg_mask=fg_mask, survey_mask_hpix=survey_mask_hpix)
+
+            #save w factors
+            if ifreq==0:
+                if survey_mask is not None:
+                    wfacs = {key : sky_dict[key] for key in ["w1","w2","w4"]}
+                    print("wfacs:")
+                    print(wfacs)
+                    with open(opj(cmb_seed_output_dir, "wfacs.yml"), "w") as f:
+                        yaml.dump(wfacs, f)
+            
             print('got alms')
 
             if "fg_masked_alms" in sky_dict:
@@ -465,10 +631,15 @@ def main():
             cmb_alms = sky_dict['cmb_alms']
             sky_alms = sky_dict['cmb_alms'] + fg_alms
 
-            do_modelsub=False
+            """
+            fg_alms = change_alm_lmax(fg_alms, config.lmax_out)
+            sky_alms = change_alm_lmax(sky_alms, config.lmax_out)
             if fg_model_alms is not None:
+                fg_model_alms = change_alm_lmax(
+                    fg_model_alms, config.lmax_out)
                 fg_alms -= fg_model_alms
                 sky_alms -= fg_model_alms
+            """
 
             if ifreq==0:
                 cmb_alms_true = cmb_alms.copy()
@@ -486,44 +657,72 @@ def main():
             ax.plot(ell_plot, ell_plot*(ell_plot+1)*cl_fg,
                     label='fgs input')
 
-            #save some stuff
-            save=True
-            if save:
-                if not config.save_fgs_only:
-                    hp.fitsfunc.write_alm(
-                        opj(cmb_seed_output_dir,
-                            "sky_nonoise_alms_%s.fits"%freq),
-                        futils.change_alm_lmax(sky_alms, config.lmax_out),
-                        overwrite=True
-                    )
-                    if ifreq==0:
-                        hp.fitsfunc.write_alm(opj(cmb_seed_output_dir,
-                                              "cmb_nonoise_alms.fits"),
-                                          futils.change_alm_lmax(cmb_alms, config.lmax_out),
-                                              overwrite=True
-                                          )
-                hp.fitsfunc.write_alm(
-                    opj(cmb_seed_output_dir,
-                        "fg_nonoise_alms_%s.fits"%freq),
-                    futils.change_alm_lmax(fg_alms, config.lmax_out),
-                    overwrite=True
-                    )
-                    
 
             #Noise and beam
             #We only need to convolve with the beam
             #if we're adding noise
             if not config.disable_noise:
-                beam_fn = lambda x: maps.gauss_beam(x, config.beam_fwhm[ifreq])
-                unbeam_fn = lambda x: 1./maps.gauss_beam(x, config.beam_fwhm[ifreq])
+                if config.beam_from_file is not None:
+                    print("reading beam from %s"%config.beam_from_file[ifreq])
+                    l,bl = np.loadtxt(config.beam_from_file[ifreq],
+                                      usecols=(0,1), unpack=True)
+                    assert np.isclose(l[0],0.)
+                    bl = bl/bl[0]
+                    beam_fn = bl[:config.mlmax+1]
+                    unbeam_fn = 1./beam_fn
+                else:
+                    beam_fn = lambda x: maps.gauss_beam(x, config.beam_fwhm[ifreq])
+                    unbeam_fn = lambda x: 1./maps.gauss_beam(x, config.beam_fwhm[ifreq])
+                    
                 cmb_alms_beamed = curvedsky.almxfl(cmb_alms, beam_fn)
                 sky_alms_beamed = curvedsky.almxfl(sky_alms, beam_fn)
                 fg_alms_beamed = curvedsky.almxfl(fg_alms, beam_fn)
 
-                #make maps
-                res = config.res*utils.arcmin
-                shape,wcs = enmap.fullsky_geometry(res=res,
+                if config.noise_seed is None:
+                    if cmb_seed is not None:
+                        print("setting noise seed equal to cmb_seed*1000+ifreq")
+                        print("if this is not what you want, explicitly")
+                        print("set noise_seed in the config file.")
+                        noise_seed = cmb_seed*1000 + ifreq
+                    else:
+                        noise_seed = None
+                else:
+                    if cmb_seed is not None:
+                        noise_seed = config.noise_seed + cmb_seed*1000 + ifreq
+                    else:
+                        noise_seed = config.noise_seed + ifreq
+
+                if config.noise_from_ivar is not None:
+                    print("generating noise from ivar file %s"%config.noise_from_ivar[ifreq]
+                          )
+                    ivar_map = enmap.read_map(
+                        config.noise_from_ivar[ifreq]
+                        )
+                    if len(ivar_map.shape)==3:
+                        ivar_map = ivar_map[0]
+                    assert np.all(np.isfinite(ivar_map))
+                    shape, wcs = ivar_map.shape, ivar_map.wcs
+                    rng = np.random.default_rng(
+                        seed=noise_seed)
+                    noise = rng.standard_normal(
+                        shape)
+                    ivar_nonzero = ivar_map>0.
+                    ivar_median = np.median(ivar_map[ivar_nonzero])
+                    valid_ivar = ivar_nonzero * (ivar_map>ivar_median/1.e6)
+                    noise[valid_ivar] /= np.sqrt(ivar_map[valid_ivar])
+                    noise *= valid_ivar.astype(float)
+                    noise_map = enmap.enmap(noise,
+                                            wcs=wcs,
+                                            copy=False)
+                else:
+                    res = config.res*utils.arcmin
+                    shape,wcs = enmap.fullsky_geometry(res=res,
                                              proj='car')
+                    noise_map = maps.white_noise(
+                        shape, wcs, float(config.noise_sigma[ifreq]),
+                        seed=noise_seed)
+                
+
                 sky_map = enmap.zeros(shape=shape, wcs=wcs)
                 curvedsky.alm2map(sky_alms_beamed, sky_map)
                 cmb_map = enmap.zeros(shape=shape, wcs=wcs)
@@ -531,19 +730,8 @@ def main():
                 fg_map = enmap.zeros(shape=shape, wcs=wcs)
                 curvedsky.alm2map(fg_alms_beamed, fg_map)
 
-                if cmb_seed is not None:
-                    if config.noise_seed is None:
-                        print("setting noise seed equal to cmb_seed*1000+ifreq")
-                        print("if this is not what you want, explicitly")
-                        print("set noise_seed in the config file.")
-                        if cmb_seed is not None:
-                            config.noise_seed = cmb_seed*1000 + ifreq
-                        else:
-                            config.noise_seed = 1234 + ifreq
 
-                noise_map = maps.white_noise(
-                    shape, wcs, config.noise_sigma[ifreq],
-                    seed=config.noise_seed)
+                print("noise_seed:", noise_seed)
                 sky_map += noise_map
                 cmb_map += noise_map
                 if config.save_maps:
@@ -553,31 +741,49 @@ def main():
                     fg_map.write(opj(cmb_seed_output_dir,
                                       "fg_map_%s.fits"%freq
                                       ))
-                    ivar_map = maps.ivar(shape, wcs, config.noise_sigma[ifreq])
+                    if config.noise_from_ivar is None:
+                        ivar_map = maps.ivar(shape, wcs, config.noise_sigma[ifreq])
                     ivar_map.write(opj(cmb_seed_output_dir,
                                        "ivar_map_%s.fits"%freq
-                                       ))
+                    ))
+                    #also save a survey mask
+                    if config.save_survey_mask:
+                        if (icmb==0 and ifreq==0):
+                            survey_mask = enmap.ones(shape=shape,
+                                                     wcs=wcs)
+                            survey_mask.write(
+                                opj(output_dir, 'survey_mask.fits'
+                                    )
+                                )
 
-                #Also ACT format beam files
-                # Make beam files
-                beam_fwhm_arcmin = config.beam_fwhm[ifreq]
-                sigmaDeg=(beam_fwhm_arcmin/(2*np.sqrt(2*np.log(2))))/60. 
 
-                # Radial distance in degrees
-                xRange=np.linspace(0.0, 0.5, 1800)
+                if config.beam_from_file is not None:
+                    beam_file_name = opj(cmb_seed_output_dir,
+                                         "beam_%s.txt"%freq
+                    )
 
-                # Gaussian
-                resp=np.exp(-np.power(xRange, 2)/(2*np.power(sigmaDeg, 2)))
+                    write_beam_real(bl, beam_file_name)
+                else:
+                    #Also ACT format beam files
+                    # Make beam files
+                    beam_fwhm_arcmin = config.beam_fwhm[ifreq]
+                    sigmaDeg=(beam_fwhm_arcmin/(2*np.sqrt(2*np.log(2))))/60. 
 
-                # Solid angle in nsr
-                solidAngle=np.trapz(resp, np.pi*(np.radians(xRange))**2)*1e9
+                    # Radial distance in degrees
+                    xRange=np.linspace(0.0, 0.5, 1800)
 
-                # Output format: plain text; 1st column degrees; 2nd column response (normalised to 1.0 at 0.00)
-                beam_file_name = opj(cmb_seed_output_dir, "beam_file_%0.1f-arcmin.txt"%beam_fwhm_arcmin)
-                with open(beam_file_name, "w") as f:
-                    f.write("# solid angle = %.2f nsr\n" % (solidAngle))
-                    for x, r in zip(xRange, resp):
-                        f.write("%.6f %.6e\n" % (x, r))
+                    # Gaussian
+                    resp=np.exp(-np.power(xRange, 2)/(2*np.power(sigmaDeg, 2)))
+
+                    # Solid angle in nsr
+                    solidAngle=np.trapz(resp, np.pi*(np.radians(xRange))**2)*1e9
+
+                    # Output format: plain text; 1st column degrees; 2nd column response (normalised to 1.0 at 0.00)
+                    beam_file_name = opj(cmb_seed_output_dir, "beam_file_%s_%0.1f-arcmin.txt"%(freq, beam_fwhm_arcmin))
+                    with open(beam_file_name, "w") as f:
+                        f.write("# solid angle = %.2f nsr\n" % (solidAngle))
+                        for x, r in zip(xRange, resp):
+                            f.write("%.6f %.6e\n" % (x, r))
                     
                 #deconcolve and save alms
                 sky_alms_beamed = curvedsky.map2alm(
@@ -592,20 +798,50 @@ def main():
 
 
             #save alms
+            fg_alms = change_alm_lmax(fg_alms, config.lmax_out)
+            sky_alms = change_alm_lmax(sky_alms, config.lmax_out)
+            if fg_model_alms is not None:
+                fg_model_alms = change_alm_lmax(
+                    fg_model_alms, config.lmax_out)
+                fg_alms -= fg_model_alms
+                sky_alms -= fg_model_alms
+
+            if (config.do_hilc or config.do_freq_coadd):
+                fg_alms_list.append(fg_alms)
+                sky_alms_list.append(sky_alms)
+                
+            #save some stuff
+            if not config.save_fgs_only:
+                if config.save_alms:
+                    hp.fitsfunc.write_alm(
+                        opj(cmb_seed_output_dir,
+                            "sky_nonoise_alms_%s.fits"%freq),
+                        sky_alms,
+                        overwrite=True
+                    )
+                    if ifreq==0:
+                        hp.fitsfunc.write_alm(opj(cmb_seed_output_dir,
+                                              "cmb_nonoise_alms.fits"),
+                                              change_alm_lmax(cmb_alms, config.lmax_out),
+                                              overwrite=True
+                                          )
+            if config.save_alms:
+                hp.fitsfunc.write_alm(
+                    opj(cmb_seed_output_dir,
+                        "fg_nonoise_alms_%s.fits"%freq),
+                    fg_alms,
+                    overwrite=True
+                    )
+                
             if not config.disable_noise:
-                if not save_fg_alms_only:
-                    hp.fitsfunc.write_alm(
-                        opj(cmb_seed_output_dir,
-                            "sky_alms_%s.fits"%freq),
-                        futils.change_alm_lmax(sky_alms, config.lmax_out),
-                        overwrite=True
-                    )
-                    hp.fitsfunc.write_alm(
-                        opj(cmb_seed_output_dir,
-                            "cmb_alms_%s.fits"%freq),
-                        futils.change_alm_lmax(cmb_alms, config.lmax_out),
-                        overwrite=True
-                    )
+                if not config.save_fgs_only:
+                    if config.save_alms:
+                        hp.fitsfunc.write_alm(
+                            opj(cmb_seed_output_dir,
+                                "sky_alms_%s.fits"%freq),
+                            change_alm_lmax(sky_alms, config.lmax_out),
+                            overwrite=True
+                        )
             _, cl_sky = bin_cl(curvedsky.alm2cl(sky_alms))
             _,cl_cmb = bin_cl(curvedsky.alm2cl(cmb_alms))
             ax.plot(ell_plot, ell_plot*(ell_plot+1)*cl_sky,
@@ -616,5 +852,247 @@ def main():
             ax.plot(ell_plot, ell_plot*(ell_plot+1)*cl_fgs,
                     label='fgs')
 
+        Cl_tot_dict = {}
+        if config.do_freq_coadd:
+            print("making coadd")
+            noise_cls = []
+            ells = np.arange(config.lmax_out+1)
+            cmb_cl_nonoise = futils.get_theory_dicts(grad=True,lmax=config.lmax_out)[1]['TT']
+            if config.Nl_file is None:
+                print(config.freqs)
+                for ifreq,freq in enumerate(config.freqs):
+                    print(ifreq, config.freqs[ifreq])
+                    print(config.noise_sigma)
+                    noise_sigma = config.noise_sigma[ifreq]
+                    bl = maps.gauss_beam(
+                    ells, config.beam_fwhm[ifreq])
+                    Nl_tt = (noise_sigma*np.pi/180./60.)**2. * np.ones(config.lmax_out+1) / bl**2
+                    Cl_tot_dict[freq] = Nl_tt + cmb_cl_nonoise
+                    noise_cls.append(Nl_tt)
+            else:
+                raise NotImplementedError("not implemented reading Nl from file")
+            fg_alms_coadd = np.zeros_like(fg_alms_list[0])
+
+            wls = np.zeros((len(config.freqs), config.lmax_out+1))
+            wl_sum = np.zeros(config.lmax_out+1)
+            for ifreq,freq in enumerate(config.freqs):
+                wls[ifreq] = 1./(noise_cls[ifreq])
+                if config.coadd_freqs is not None:
+                    if freq not in config.coadd_freqs:
+                        continue
+                wl_sum += wls[ifreq]
+                    
+            print("wl_sum.shape",wl_sum.shape)
+            Nl_tt_freqcoadd = np.zeros_like(wls)
+            for ifreq,freq in enumerate(config.freqs):
+                if config.coadd_freqs is not None:
+                    if freq not in config.coadd_freqs:
+                        print("skipping freq %s"%freq)
+                        continue
+                print("adding freq %s"%freq)
+                fg_alms_coadd += hp.almxfl(fg_alms_list[ifreq], wls[ifreq]/wl_sum)
+                Nl_tt_freqcoadd += (wls[ifreq]/wl_sum)**2 * (1./wls[ifreq])
+                
+            if config.save_alms:
+                hp.fitsfunc.write_alm(
+                    opj(cmb_seed_output_dir,
+                        "fg_nonoise_alms_freqcoadd.fits"),
+                    fg_alms_coadd,
+                    overwrite=True
+                    )
+            Cl_tot_dict["freq_coadd"] = Nl_tt_freqcoadd + cmb_cl_nonoise
+            
+            
+        if config.do_hilc:
+            freq_inds = np.argsort(config.freqs)
+            qids = np.sort(config.freqs)
+            n = len(qids)
+            version, shape, wcs, mask_fncs = None,None,None,None
+            dataModel="hello"
+            target_fwhm_arcmin=2.
+            hilc = harmonic_ilc(qids, version,shape,wcs,mask_fncs,
+                                target_fwhm_arcmin=target_fwhm_arcmin,
+                                dataModel=dataModel,lmax=config.lmax_out)
+
+            #set alms. These should be convolved with
+            #the target_fwhm beam
+            ells = np.arange(config.lmax_out+1)
+            target_beam = maps.gauss_beam(
+                ells, target_fwhm_arcmin)
+            for qid, freq_ind in zip(qids, freq_inds):
+                hilc.alms_T[qid] = curvedsky.almxfl(fg_alms_list[freq_ind],
+                                                    target_beam)
+            #Now get covariance. For this we need
+            #noise Cls, cmb cls, and foreground cls.
+            #ignore cmb x foreground correlations
+            noise_cls = []
+            if config.Nl_file is None:
+                for ifreq in range(n):
+                    noise_sigma = config.noise_sigma[ifreq]
+                    Nl_tt = (noise_sigma*np.pi/180./60.)**2. * np.ones(config.lmax_out+1)
+                    beam = maps.gauss_beam(
+                        ells, config.beam_fwhm[ifreq])
+                    noise_cls.append(Nl_tt/beam**2)
+            else:
+                raise NotImplementedError("not implemented reading Nl from file")
+            cmb_cl_nonoise = futils.get_theory_dicts(grad=True,lmax=config.lmax_out)[1]['TT']
+            
+            covmat = np.zeros((config.lmax_out+1, n, n))
+            cltots = []
+            for i in range(n):
+                freq_ind_i = freq_inds[i]
+                #bl_i = maps.gauss_beam(
+                #    ells, config.beam_fwhm[freq_ind_i])
+                for j in range(i,n):
+                    freq_ind_j = freq_inds[j]
+                    #bl_j = maps.gauss_beam(
+                    #    ells, config.beam_fwhm[freq_ind_j])
+                    cl_fg = curvedsky.alm2cl(fg_alms_list[freq_ind_i],
+                                             fg_alms_list[freq_ind_j])
+                    total_cl = cmb_cl_nonoise+cl_fg
+                    if i==j:
+                        total_cl += noise_cls[freq_ind_i]
+                        cltots.append(total_cl)
+                    covmat[:,i,j] = total_cl * target_beam**2
+                    covmat[:,j,i] = covmat[:,i,j]
+                    
+            hilc.covMat = covmat
+            ilc_fg_alms_beamed = hilc.apply_ilc(response_fnc_cmb)
+            ilc_fg_alms_tszdeproj_beamed = hilc.apply_ilc_deproj(response_fnc_cmb, [response_fnc_tsz])
+            ilc_fg_alms_cibdeproj_beamed = hilc.apply_ilc_deproj(response_fnc_cmb, [response_fnc_cib])
+            ilc_fg_alms = hp.almxfl(ilc_fg_alms_beamed, 1./target_beam)
+            ilc_fg_alms_tszdeproj = hp.almxfl(ilc_fg_alms_tszdeproj_beamed, 1./target_beam)
+            ilc_fg_alms_cibdeproj = hp.almxfl(ilc_fg_alms_cibdeproj_beamed, 1./target_beam)
+
+            #For symmetrized estimators, we'll need noise curves, for which we
+            #need weights
+            w_T_ilc = hilc.get_ilc_weights(response_fnc_cmb)
+            w_T_ilc_tszdeproj = hilc.get_ilc_weights_deproj(response_fnc_cmb, [response_fnc_tsz])
+            w_T_ilc_cibdeproj = hilc.get_ilc_weights_deproj(response_fnc_cmb, [response_fnc_cib])
+
+            Cl_tot_dict["hilc"] = hilc.get_cov_from_weights(w_T_ilc)
+            Cl_tot_dict["hilc-tszd"] = hilc.get_cov_from_weights(w_T_ilc_tszdeproj)
+            Cl_tot_dict["hilc-cibd"] = hilc.get_cov_from_weights(w_T_ilc_cibdeproj)
+            Cl_tot_dict["hilc_hilc-tszd"] = hilc.get_cov_from_weights(
+                w_T_ilc, w_T2=w_T_ilc_tszdeproj)
+            Cl_tot_dict["hilc_hilc-cibd"] = hilc.get_cov_from_weights(
+                w_T_ilc, w_T2=w_T_ilc_cibdeproj)
+            
+            #if we have more than 2 frequencies, let's also try deprojecting both
+            #cib and tsz
+            do_tszandcibdeproj = False
+            if len(config.freqs)>2:
+                print("doing simultaneous tsz and cib deprojection")
+                do_tszandcibdeproj = True
+                ilc_fg_alms_tszandcibdeproj_beamed = hilc.apply_ilc_deproj(
+                    response_fnc_cmb, [response_fnc_tsz, response_fnc_cib]
+                    )
+                ilc_fg_alms_tszandcibdeproj = hp.almxfl(ilc_fg_alms_tszandcibdeproj_beamed,
+                                                     1./target_beam)
+                #Nl_ilc_tszandcibdeproj_beamed = hilc.get_noise_curves(
+                #    response_fnc_cmb, [response_fnc_tsz, response_fnc_cib])
+                #Nl_ilc_tszandcibdeproj = Nl_ilc_tszandcibdeproj_beamed / target_beam
+                w_T_ilc_tszandcibdeproj = hilc.get_ilc_weights_deproj(
+                    response_fnc_cmb,
+                    [response_fnc_tsz, response_fnc_cib])
+                Cl_tot_dict["hilc-tszandcibd"] = hilc.get_cov_from_weights(
+                    w_T_ilc_tszandcibdeproj)
+                Cl_tot_dict["hilc_hilc-tszandcibd"] = hilc.get_cov_from_weights(
+                    w_T_ilc, w_T2=w_T_ilc_tszandcibdeproj)
+
+            #Repeat for sky alms
+            for qid, freq_ind in zip(qids, freq_inds):
+                hilc.alms_T[qid] = curvedsky.almxfl(sky_alms_list[freq_ind],
+                                                    target_beam)
+            ilc_sky_alms_beamed = hilc.apply_ilc(response_fnc_cmb)
+            ilc_sky_alms_tszdeproj_beamed = hilc.apply_ilc_deproj(response_fnc_cmb, [response_fnc_tsz])
+            ilc_sky_alms_cibdeproj_beamed = hilc.apply_ilc_deproj(response_fnc_cmb, [response_fnc_cib])
+            ilc_sky_alms = hp.almxfl(ilc_sky_alms_beamed, 1./target_beam)
+            ilc_sky_alms_tszdeproj = hp.almxfl(ilc_sky_alms_tszdeproj_beamed, 1./target_beam)
+            ilc_sky_alms_cibdeproj = hp.almxfl(ilc_sky_alms_cibdeproj_beamed, 1./target_beam)
+            if do_tszandcibdeproj:
+                ilc_sky_alms_tszandcibdeproj_beamed = hilc.apply_ilc_deproj(
+                    response_fnc_cmb, [response_fnc_tsz, response_fnc_cib]
+                    )
+                ilc_sky_alms_tszandcibdeproj = hp.almxfl(ilc_sky_alms_tszandcibdeproj_beamed,
+                                                     1./target_beam)
+                
+
+                
+                
+
+            #Also get noise curves for ilc maps
+            """
+            Nl_ilc_beamed = hilc.get_noise_curves(response_fnc_cmb)
+            Nl_ilc = Nl_ilc_beamed / target_beam
+            Nl_ilc_tszdeproj_beamed = hilc.get_noise_curves(response_fnc_cmb, [response_fnc_tsz])
+            Nl_ilc_tszdeproj = Nl_ilc_tszdeproj_beamed / target_beam
+            Nl_ilc_cibdeproj_beamed = hilc.get_noise_curves(response_fnc_cmb, [response_fnc_cib])
+            Nl_ilc_cibdeproj = Nl_ilc_cibdeproj_beamed / target_beam
+            """
+            
+
+            dtype = [(key, float) for key in Cl_tot_dict]
+            Cl_tot_data = np.zeros(config.mlmax+1, dtype=dtype)
+            for key,val in Cl_tot_dict.items():
+                Cl_tot_data[key] = val
+
+            np.save(opj(cmb_seed_output_dir, "Cltot_data.npy"),
+                    Cl_tot_data)
+            
+            if config.save_alms:
+                hp.fitsfunc.write_alm(
+                    opj(cmb_seed_output_dir,
+                        "fg_nonoise_alms_hilc.fits"),
+                    ilc_fg_alms,
+                    overwrite=True
+                    )
+                hp.fitsfunc.write_alm(
+                    opj(cmb_seed_output_dir,
+                        "fg_nonoise_alms_hilc-tszd.fits"),
+                    ilc_fg_alms_tszdeproj,
+                    overwrite=True
+                    )
+                hp.fitsfunc.write_alm(
+                    opj(cmb_seed_output_dir,
+                        "fg_nonoise_alms_hilc-cibd.fits"),
+                    ilc_fg_alms_cibdeproj,
+                    overwrite=True
+                    )
+                if do_tszandcibdeproj:
+                    hp.fitsfunc.write_alm(
+                        opj(cmb_seed_output_dir,
+                            "fg_nonoise_alms_hilc-tszandcibd.fits"),
+                        ilc_fg_alms_tszandcibdeproj,
+                        overwrite=True
+                        )
+                if not config.save_fgs_only:
+                    hp.fitsfunc.write_alm(
+                        opj(cmb_seed_output_dir,
+                            "sky_nonoise_alms_hilc.fits"),
+                        ilc_sky_alms,
+                        overwrite=True
+                        )
+                    hp.fitsfunc.write_alm(
+                        opj(cmb_seed_output_dir,
+                            "sky_nonoise_alms_hilc-tszd.fits"),
+                        ilc_sky_alms_tszdeproj,
+                        overwrite=True
+                        )
+                    hp.fitsfunc.write_alm(
+                        opj(cmb_seed_output_dir,
+                            "sky_nonoise_alms_hilc-cibd.fits"),
+                        ilc_sky_alms_cibdeproj,
+                        overwrite=True
+                        )
+                    if do_tszandcibdeproj:
+                        hp.fitsfunc.write_alm(
+                            opj(cmb_seed_output_dir,
+                                "sky_nonoise_alms_hilc-tszandcibd.fits"),
+                            ilc_sky_alms_tszandcibdeproj,
+                            overwrite=True
+                            )
+
+                    
 if __name__=="__main__":
     main()

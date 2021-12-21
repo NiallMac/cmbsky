@@ -1,6 +1,8 @@
 prepare_map:
     sim_name: "websky"
-    data_dir: "/global/project/projectdirs/act/data/maccrann/websky"
+    websky_dir: '/global/project/projectdirs/act/data/maccrann/websky'
+    sehgal_dir: '/global/project/projectdirs/act/data/maccrann/sehgal'
+    sehgal10_dir: '/global/project/projectdirs/act/data/sehgal_et_al_sims/cosmo_sim_maps/July2009/inputs/microwaveSky'
     lensed_alms_dir: sNone
     do_cmb: True
     do_tsz: False
@@ -10,7 +12,11 @@ prepare_map:
     noise_sigma:
       - 17.
       - 17.
-    noise_seed: iNone
+    noise_from_ivar: lsNone
+    beam_from_file: lsNone
+    noise_maps: lsNone
+    survey_mask: sNone
+    noise_seed: 1234
     cmb_seeds: liNone
     cmb_seed_start: iNone
     cmb_seed_end: iNone
@@ -22,16 +28,18 @@ prepare_map:
     freqs:
       - "0093"
       - "0145"
-    mlmax: 12000
-    lmax_out: 4000
+    mlmax: 6000
+    lmax_out: 6000
     save_maps: False
     save_fgs_only: False
+    save_survey_mask: False
+    save_alms: True
 
     #halo masking
     halo_mask_fgs: False
     m_min: 1e.15
     zmax: 4.
-    halo_mask_radius: 10.
+    halo_mask_radius: 5.
     num_halo: iNone
 
     #nemo catalog masking
@@ -43,16 +51,32 @@ prepare_map:
     fg_model_alms: lsNone
 
     #source masking
-    cib_flux_cut: lfNone
-    flux_cut_freq: liNone
-    radiops_flux_cut: lfNone
-    radio_ps_flux_cut_freq: liNone
+    cib_flux_cut: lsNone
+    flux_cut_freq: lsNone
+    radiops_flux_cut: lsNone
+    do_union_flux_mask: False
 
     #Set to true to not add
     #noise to maps
     disable_noise: True
 
     fg_model_alms: lsNone
+    fg_model_maps: lsNone
+
+    #multifrequency stuff
+    do_freq_coadd: False
+    freq_coadd_weights: 'freq_weights.txt'
+    coadd_freqs: lsNone
+    do_hilc: False
+    deproject: sNone
+    Nl_file: sNone
+
+    #We're doing cltot calculations
+    #to use for filters. For the ksz^2
+    #project may need to include high z
+    #ksz in filters.
+    include_kszr_in_cmbcl: False
+    include_kszl_in_cmbcl: False
 
 reconstruction:
     kappa_lmin: 100
@@ -65,7 +89,9 @@ reconstruction:
     cmb_seed_start: iNone
     cmb_seed_end: iNone
     profile_file: sNone #file with profile
+    generate_profile: False
     nside: 4096
+    fg_model_alms: lsNone
 
 bias:
     nsim_n0: 10

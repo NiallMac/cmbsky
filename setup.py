@@ -9,6 +9,7 @@ setuptools.setup(
     author_email="nm746@cam.ac.uk",
     description="Tools for working with microwave sky sims",
     packages=["cmbsky"],
-    package_data={'cmbsky' : ['defaults.yaml']},
+    include_package_data=True,
+    package_data={'cmbsky': ['defaults.yaml']},
     scripts=scripts
 )
