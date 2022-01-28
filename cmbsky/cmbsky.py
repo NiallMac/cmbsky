@@ -11,7 +11,7 @@ from falafel.utils import change_alm_lmax
 import astropy.io.fits as afits
 import h5py
 from astropy.cosmology import FlatLambdaCDM, z_at_value
-import astropy.units as u
+import astropy.units as units
 
 CONVERSION_FACTORS = {"CIB" : 
                       {"0093" : 4.6831e3, "0100" : 4.1877e3, "0145" : 2.6320e3, "0353" : 3.3710e3, "0545" : 1.7508e4},
@@ -79,6 +79,12 @@ class CMBSky(object):
         self.data_dir = data_dir
         self.halodata = None
 
+    def get_cmb1_alms(self, cmb_seed, sim_name, lmax):
+        f = opj(self.data_dir,
+                "T0alm_cmb%d_%s_lmax%d.fits"%(cmb_seed, sim_name, lmax)
+                )
+        return hp.fitsfunc.read_alm(f)
+        
     def get_nemo_source_mask(self, nemo_file,
                              mask_radius,
                              snr_min=None):
@@ -129,7 +135,7 @@ class CMBSky(object):
             ps_flux_density, flux_cut)
         return ps_flux_mask
     
-    def get_fg_mask(self, halo_mask_fgs=False, m_min=1.e+15, zmax=4.,
+    def get_fg_mask(self, halo_mask_fgs=False, mmin=1.e+15, zmax=4.,
                     halo_mask_radius=10.,
                     cib_flux_cut=None, flux_cut_freq=None,
                     radiops_flux_cut=None, nemo_mask_fgs=False,
@@ -148,7 +154,7 @@ class CMBSky(object):
 
         if halo_mask_fgs:
             halo_mask = self.get_halo_mask(
-                m_min, halo_mask_radius,
+                mmin, halo_mask_radius,
                 zmax=zmax
                 )
             fg_mask *= halo_mask
@@ -158,6 +164,9 @@ class CMBSky(object):
                 assert isinstance(flux_cut_freq, list)
                 total_cib_flux_mask = np.ones_like(fg_mask)
                 for cut, cut_freq in zip(cib_flux_cut, flux_cut_freq):
+                    if cut is None:
+                        print("no cib flux cut applied at %s GHz"%cut_freq)
+                        continue
                     print("masking cib flux>%f at %s GHz"%(
                         cut, cut_freq))
                     cib_flux_mask = self.get_cib_flux_mask(
@@ -182,6 +191,9 @@ class CMBSky(object):
                 total_radiops_flux_mask = np.ones_like(fg_mask)
                 for cut, cut_freq in zip(radiops_flux_cut,
                                          flux_cut_freq):
+                    if cut is None:
+                        print("no radio point-source flux cut applied at %s GHz"%cut_freq)
+                        continue
                     print("masking radio ps flux>%f at %s GHz"%(
                         cut, cut_freq))
                     ps_flux_mask = self.get_radio_ps_flux_mask(
@@ -339,6 +351,9 @@ class SehgalSky(CMBSky):
         self.rescale_cib = rescale_cib
         self.rescale_tsz = rescale_tsz
         self.data_dir = data_dir
+
+    def get_cmb1_alms(self, cmb_seed, lmax):
+        return super(SehgalSky, self).get_cmb1_alms(cmb_seed, "sehgal", lmax)
         
     def get_cib_temp(self, freq):
         filename = opj(self.data_dir,
@@ -396,14 +411,14 @@ class SehgalSky(CMBSky):
         kappa_alms = futils.change_alm_lmax(kappa_alms, lmax)
         return kappa_alms
 
-    def load_halo_catalog(self, mmin=0.):
+    def load_halo_catalog(self, mmin=0., cols=None):
         """
         load the halo catalog
         """
         halodata = np.loadtxt(
             opj(self.data_dir, "halo_nbody.ascii")
         ).T
-        print("read %d halos"%halodata.shape)
+        print("read %d halos"%halodata.shape[1])
         m_200 = halodata[12]
         use = m_200>mmin
         halodata = halodata[:,use]
@@ -448,12 +463,12 @@ class SehgalSky(CMBSky):
             halodata_fullsky['M_200'][i*num_halo:(i+1)*num_halo] = M_200
         self.halodata = halodata_fullsky
 
-    def get_halo_mask(self, m_min, mask_radius,
+    def get_halo_mask(self, mmin, mask_radius,
                       zmax=None, num_halo=None,
                       mass_col='M_200'):
 
         self.load_halo_catalog()
-        use = self.halodata[mass_col] > m_min
+        use = self.halodata[mass_col] > mmin
         halodata = self.halodata[use]
         num_halo = len(halodata)
 
@@ -483,7 +498,7 @@ class SehgalSky(CMBSky):
                     "Sehgalsimparams_healpix_4096_KappaeffLSStoCMBfullsky_phi_SimLens_Tsynfastnopell_fast_lmax8000_nside4096_interp2.5_method1_1_lensed_map.fits")
             )
         if survey_mask_hpix is not None:
-            lensed_cmb *= survey_mask_hpix
+            lensed_cmb *= hp.ud_grade(survey_mask_hpix, 4096)
         if lmax is not None:
             cmb_alms = hp.map2alm(lensed_cmb, lmax=lmax)
         return cmb_alms
@@ -497,6 +512,9 @@ class Sehgal10Sky(SehgalSky):
         self.rescale_cib = rescale_cib
         self.rescale_tsz = rescale_tsz
         self.data_dir = data_dir
+
+    def get_cmb1_alms(self, cmb_seed, lmax):
+        return super(Sehgal10Sky, self).get_cmb1_alms(cmb_seed, "sehgal", lmax)
         
     def get_cib_temp(self, freq,
                      rescale_cib=None):
@@ -595,7 +613,10 @@ class Sehgal10Sky(SehgalSky):
                     "Sehgalsimparams_healpix_4096_KappaeffLSStoCMBfullsky_phi_SimLens_Tsynfastnopell_fast_lmax8000_nside4096_interp2.5_method1_1_lensed_map.fits")
             )
         if survey_mask_hpix is not None:
-            lensed_cmb *= survey_mask_hpix
+            print("lensed_cmb nside:", hp.pixelfunc.npix2nside(len(lensed_cmb)))
+            print("survey_mask_hpix nside:", hp.pixelfunc.npix2nside(len(survey_mask_hpix)))
+            print("survey_mask_hpix dgraded nside:", hp.pixelfunc.npix2nside(len(hp.ud_grade(survey_mask_hpix, 4096))))
+            lensed_cmb *= hp.ud_grade(survey_mask_hpix, 4096)
         if lmax is not None:
             cmb_alms = hp.map2alm(lensed_cmb, lmax=lmax)
         return cmb_alms
@@ -622,7 +643,6 @@ class WebSky(CMBSky):
                  ksz_map_name = 'ksz.fits',
                  websky_cosmo = {'Omega_M': 0.31, 'Omega_B': 0.049, 'Omega_L': 0.69, 
                                  'h': 0.68, 'sigma_8': 0.81, 'n_s':0.965},
-                 verbose = True
     ):
         super().__init__(data_dir)
 
@@ -634,7 +654,11 @@ class WebSky(CMBSky):
         self.halodata = None #this will be set
         #on calling self.load_halo_catalog
 
-    def load_halo_catalog(self, mmin=0., mmax=np.inf, zmin=0., zmax=np.inf):
+    def get_cmb1_alms(self, cmb_seed, lmax):
+        return super(WebSky, self).get_cmb1_alms(cmb_seed, "websky", lmax)
+        
+    def load_halo_catalog(self, mmin=0., mmax=np.inf, zmin=0., zmax=np.inf,
+                          cols=None):
         """load in peak patch dark matter halo catalog
 
         Returns
@@ -646,19 +670,22 @@ class WebSky(CMBSky):
             M [M_sun (M_200,m)], redshift (v_pec not included)
         """
 
+        astropy_cosmo = FlatLambdaCDM(H0=self.websky_cosmo['h']*100,
+                                      Om0=self.websky_cosmo['Omega_M'])
+        
         halo_catalog_file = open(opj(self.data_dir, self.halo_catalog_name),"rb")
         
         # load catalog header
         Nhalo            = np.fromfile(halo_catalog_file, dtype=np.int32, count=1)[0]
         RTHMAXin         = np.fromfile(halo_catalog_file, dtype=np.float32, count=1)
         redshiftbox      = np.fromfile(halo_catalog_file, dtype=np.float32, count=1)
-        if self.verbose: print("\nNumber of Halos in full catalog %d \n " % Nhalo)
+        #print("\nNumber of Halos in full catalog %d \n " % Nhalo)
 
         nfloats_perhalo = 10
         npkdata         = nfloats_perhalo*Nhalo
 
         # load catalog data
-        print('reading from file')
+        print('reading halo catalog from file')
         halodata        = np.fromfile(halo_catalog_file, dtype=np.float32, count=npkdata)
         print('done reading from file')
         halodata        = np.reshape(halodata,(Nhalo,nfloats_perhalo))
@@ -675,9 +702,8 @@ class WebSky(CMBSky):
 
         # cut redshift range
         if zmin > 0 or zmax < np.inf:
-            self.import_astropy()
-            rofzmin = self.astropy_cosmo.comoving_distance(zmin).value
-            rofzmax = self.astropy_cosmo.comoving_distance(zmax).value
+            rofzmin = astropy_cosmo.comoving_distance(zmin).value
+            rofzmax = astropy_cosmo.comoving_distance(zmax).value
 
             rpp =  np.sqrt( np.sum(halodata[:,:3]**2, axis=1))
 
@@ -691,13 +717,16 @@ class WebSky(CMBSky):
                  ('vx', np.float64), ('vy', np.float64), ('vz', np.float64),
                  ('M', np.float64), ('redshift', np.float64),
                  ('ra', np.float64), ('dec', np.float64)]
+        
         # set up comoving distance to redshift interpolation table
         rpp =  np.sqrt( np.sum(halodata[:,:3]**2, axis=1))
 
-        zminh = self.z_at_value(self.astropy_cosmo.comoving_distance, rpp.min()*self.u.Mpc)
-        zmaxh = self.z_at_value(self.astropy_cosmo.comoving_distance, rpp.max()*self.u.Mpc)
+        zminh = z_at_value(astropy_cosmo.comoving_distance,
+                           rpp.min() * units.Mpc)
+        zmaxh = z_at_value(astropy_cosmo.comoving_distance,
+                           rpp.max() * units.Mpc)
         zgrid = np.linspace(zminh, zmaxh, 10000)
-        dgrid = self.astropy_cosmo.comoving_distance(zgrid).value
+        dgrid = astropy_cosmo.comoving_distance(zgrid).value
         redshift = np.interp(rpp, dgrid, zgrid)
         #Get halo ra/dec
         vec = np.zeros((Nhalo, 3))
@@ -706,11 +735,21 @@ class WebSky(CMBSky):
         vec[:,2] = halodata[:,2]
         ra_deg,dec_deg = hp.vec2ang(vec, lonlat=True)
 
+        if cols is not None:
+            orig_cols = [d[0] for d in dtype]
+            orig_types = [d[1] for d in dtype]
+            dtype = [(c, orig_types[orig_cols.index(c)]) for c in cols]
+            col_inds = [orig_cols.index(c) for c in cols]
+            print("cutting to cols:",cols)
+            print("rows in halodata:",col_inds)
+        else:
+            col_inds = range(len(dtype))
+        
         halodata_out = np.zeros(halodata.shape[0],
                                     dtype = dtype)
         
         # Add all columns to output array
-        for i,name in enumerate(halodata_out.dtype.names):
+        for col_ind, name in zip(col_inds, halodata_out.dtype.names):
             if name == 'redshift':
                 halodata_out[name] = redshift
             elif name == 'ra':
@@ -718,40 +757,42 @@ class WebSky(CMBSky):
             elif name == 'dec':
                 halodata_out[name] = dec_deg
             else:
-                halodata_out[name] = halodata[:,i]
+                halodata_out[name] = halodata[:,col_ind]
                 
         Nhalo = len(halodata)
         Nfloat_perhalo = len(halodata.dtype)
 
         # write out halo catalog information
-        if self.verbose:
-            print("Halo catalog after cuts: np.array((Nhalo=%d, floats_per_halo=%d)), containing:\n" % (Nhalo, Nfloat_perhalo))
-            print("saving the following columns:", halodata_out.dtype.names)
+        print("read halo catalog with %d halos"%Nhalo)
+        print("contains the following columns:")
+        print(halodata_out.dtype.names)
         self.halodata = halodata_out
         return halodata_out
 
     def get_halo_mask(
-            self, m_min, mask_radius,
+            self, mmin, mask_radius,
             zmax=None):
         """
         Load halo data and generate
         a mask to remove pixels
-        containing halos with mass>m_min
+        containing halos with mass>mmin
         and z<z_max
         """
         self.load_halo_catalog(
-                zmin=0., zmax=zmax,
-                mmin=m_min)
+            zmin=0., zmax=zmax,
+            mmin=mmin, cols=["ra","dec","M"])
         halodata = self.halodata
         num_halo=len(halodata)
 
         print("masking %d halos"%num_halo)
         #Get halo ra/dec
+        """
         vec = np.zeros((num_halo, 3))
         vec[:,0] = halodata['x']
         vec[:,1] = halodata['y']
         vec[:,2] = halodata['z']
         ra_deg,dec_deg = hp.vec2ang(vec, lonlat=True)
+        """
         dec,ra = np.radians(halodata['dec']),np.radians(halodata['ra'])
 
         r = mask_radius*utils.arcmin

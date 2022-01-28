@@ -3,6 +3,7 @@ import errno
 import yaml
 import falafel.utils as futils
 import pkg_resources
+import healpy as hp
 
 #defaults_file = pkg_resources.resource_stream(
 #    "cmbsky", "defaults.yaml")
