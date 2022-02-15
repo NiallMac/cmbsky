@@ -64,254 +64,7 @@ def filter_T(T_alm, cltot, lmin, lmax):
 def dummy_teb(alms):
     return [alms, np.zeros_like(alms), np.zeros_like(alms)]
 
-def setup_sym_estimator(px, lmin, lmax, mlmax,
-                        cltot_X, cltot_Y, cltot_XY):
-    """
-    Setup quadratic estimators for case of a
-    pair of temperature maps X and Y. In particular,
-    return 'qfuncs' for the two asymmetric estimators
-    (i.e. Q[X,Y] and Q[Y,X]) and also the symmetrized
-    estimator from https://arxiv.org/abs/2004.01139.
-    These estimators are normalized. Also return 
-    theory N0s assuming the total Cls used in filters
-    are appropriate for the maps.
-    """
 
-    #get cls for gradient filter                                                                                                                                            
-    ucls,_ = futils.get_theory_dicts(grad=True, lmax=mlmax)
-
-    cltot_X, cltot_Y, cltot_XY = (
-        cltot_X[:lmax+1], cltot_Y[:lmax+1], cltot_XY[:lmax+1]
-    )
-    
-    #Now get the norms
-    norm_tt_YX = norm_general.qtt_asym(
-        "lens", mlmax, lmin, lmax, lmin, 
-        lmax, lmax, ucls['TT'][:lmax+1], cltot_X,
-        cltot_Y)
-    norm_tt_XY = norm_general.qtt_asym(
-        "lens", mlmax, lmin, lmax, lmin, lmax, lmax,
-        ucls['TT'][:lmax+1], cltot_Y,
-        cltot_X)
-    
-    #Now get the N0s (need these for constructing
-    #symmetrized estimator)
-    #Note these are the noise on the unnormalized
-    #estimators
-    #First the aba'b' = XYXY case
-    #wx0 = 1./cltot_X
-    N0_XYXY_phi_nonorm = noise_spec.qtt_asym(
-        'lens',mlmax,lmin,lmax,
-         1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
-         1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
-         cltot_X,cltot_Y,cltot_XY,cltot_XY)
-    #Normalize the N0
-    N0_XYXY_phi = (N0_XYXY_phi_nonorm[0]*norm_tt_XY[0]**2,
-                  N0_XYXY_phi_nonorm[1]*norm_tt_XY[1]**2)
-
-    N0_XYYX_phi_nonorm = noise_spec.qtt_asym(
-        'lens',mlmax,lmin,lmax,
-         1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
-         1./cltot_Y, ucls['TT'][:lmax+1]/cltot_X,
-         cltot_XY, cltot_XY, cltot_X, cltot_Y)
-    N0_XYYX_phi = (N0_XYYX_phi_nonorm[0]*norm_tt_XY[0]*norm_tt_YX[0],
-                   N0_XYYX_phi_nonorm[1]*norm_tt_XY[1]*norm_tt_YX[1]
-                  )
-
-    N0_YXYX_phi_nonorm = noise_spec.qtt_asym(
-        'lens',mlmax,lmin,lmax,
-         1./cltot_Y, ucls['TT'][:lmax+1] / cltot_X,
-         1./cltot_Y, ucls['TT'][:lmax+1] / cltot_X,
-         cltot_Y,cltot_X,
-         cltot_XY,cltot_XY)
-    N0_YXYX_phi = (N0_YXYX_phi_nonorm[0]*norm_tt_YX[0]**2,
-                  N0_YXYX_phi_nonorm[1]*norm_tt_YX[1]**2)
-
-
-    #Also will be useful to define here functions to get the
-    #tripsectrum N0 for foregrounds. 
-    def get_fg_trispectrum_N0_XYXY(clfg_X, clfg_Y, clfg_XY):
-        N0_XYXY_fg_phi_nonorm = noise_spec.qtt_asym(
-            'lens', mlmax, lmin, lmax,
-            1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
-            1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
-            clfg_X[:lmax+1], clfg_Y[:lmax+1],
-            clfg_XY[:lmax+1], clfg_XY[:lmax+1])
-        N0_XYXY_fg_phi = (N0_XYXY_fg_phi_nonorm[0]*norm_tt_XY[0]**2,
-                  N0_XYXY_fg_phi_nonorm[1]*norm_tt_XY[1]**2)
-        return N0_XYXY_fg_phi
-
-    def get_fg_trispectrum_N0_XYYX(clfg_X, clfg_Y, clfg_XY):
-        N0_XYYX_fg_phi_nonorm = noise_spec.qtt_asym(
-            'lens',mlmax,lmin,lmax,
-            1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
-            1./cltot_Y, ucls['TT'][:lmax+1]/cltot_X,
-            clfg_XY[:lmax+1], clfg_XY[:lmax+1],
-            clfg_X[:lmax+1], clfg_Y[:lmax+1])
-        N0_XYYX_fg_phi = (N0_XYYX_fg_phi_nonorm[0]*norm_tt_XY[0]*norm_tt_YX[0],
-                       N0_XYYX_fg_phi_nonorm[1]*norm_tt_XY[1]*norm_tt_YX[1]
-        )
-        return N0_XYYX_fg_phi
-
-    def get_fg_trispectrum_N0_YXYX(clfg_X, clfg_Y, clfg_XY):
-        N0_YXYX_fg_phi_nonorm = noise_spec.qtt_asym(
-            'lens',mlmax,lmin,lmax,
-             1./cltot_Y, ucls['TT'][:lmax+1] / cltot_X,
-             1./cltot_Y, ucls['TT'][:lmax+1] / cltot_X,
-             clfg_Y[:lmax+1], clfg_X[:lmax+1],
-             clfg_XY[:lmax+1], clfg_XY[:lmax+1])
-        N0_YXYX_fg_phi = (N0_YXYX_fg_phi_nonorm[0]*norm_tt_YX[0]**2,
-                      N0_YXYX_fg_phi_nonorm[1]*norm_tt_YX[1]**2)
-        return N0_YXYX_fg_phi
-    
-    #Ok, so we have norms and N0s
-    #Now the qfuncs
-    def qfunc_XY(X, Y):
-        #Filter X and Y
-        X_filtered = filter_T(X, cltot_X, lmin, lmax)
-        Y_filtered = filter_T(Y, cltot_Y, lmin, lmax)
-        
-        phi_nonorm = qe.qe_all(px,ucls,mlmax,
-                                fTalm=X_filtered,fEalm=None,fBalm=None,
-                                estimators=['TT'],
-                                xfTalm=Y_filtered,xfEalm=None,xfBalm=None)['TT']
-        print("phi_nonorm lmax:", hp.Alm.getlmax(len(phi_nonorm[0])))
-        print("len(norm_tt_XY[0]):", len(norm_tt_XY[0]))
-        #normalize and return
-        return (curvedsky.almxfl(phi_nonorm[0], norm_tt_XY[0]),
-                curvedsky.almxfl(phi_nonorm[1], norm_tt_XY[1]))
-    
-    def qfunc_YX(X, Y):
-        #Filter X and Y
-        X_filtered = filter_T(X, cltot_X, lmin, lmax)
-        Y_filtered = filter_T(Y, cltot_Y, lmin, lmax)
-                
-        phi_nonorm = qe.qe_all(px,ucls,mlmax,
-                                fTalm=Y_filtered,fEalm=None,fBalm=None,
-                                estimators=['TT'],
-                                xfTalm=X_filtered,xfEalm=None,xfBalm=None)['TT']
-        #normalize and return
-        return (curvedsky.almxfl(phi_nonorm[0], norm_tt_YX[0]),
-                curvedsky.almxfl(phi_nonorm[1], norm_tt_YX[1]))
-    
-    #Now get weights etc. for symmetric estimator
-    #The symmetrized version is a linear combination of these two,
-    #weighted by the inverse covariance
-    #i.e. phi_sym(L) = (C)^-1_L [phi_XY(L) phi_YX(L)]^T
-    #So at each L, we need to compute the covariance 
-    #C = [[N0^XYXY, N0^XYYX],[N0^XYYX, N0^YXYX]],
-    #invert and sum
-    Cov_g = np.zeros((mlmax+1, 2, 2))
-    Cov_g[:,0,0] = N0_XYXY_phi[0]
-    Cov_g[:,0,1] = N0_XYYX_phi[0]
-    Cov_g[:,1,1] = N0_YXYX_phi[0]
-    Cov_g[:,1,0] = Cov_g[:,0,1]
-
-    Cov_c = np.zeros_like(Cov_g)
-    Cov_c[:,0,0] = N0_XYXY_phi[1]
-    Cov_c[:,0,1] = N0_XYYX_phi[1]
-    Cov_c[:,1,1] = N0_YXYX_phi[1]
-    Cov_c[:,1,0] = Cov_c[:,0,1]        
-
-    w_XY_g = np.zeros(mlmax+1)
-    w_YX_g = np.zeros(mlmax+1)
-    w_XY_c = np.zeros(mlmax+1)
-    w_YX_c = np.zeros(mlmax+1)
-    for l in range(2, mlmax+1):
-    #for l in range(lmin,lmax+1):
-        #gradient
-        try:
-            inv_cov_g = np.linalg.inv(Cov_g[l])
-        except LinAlgError as e:
-            print(l,Cov_g[l])
-            raise(e)
-        w_XY_g[l] = inv_cov_g[0,0] + inv_cov_g[0,1]
-        w_YX_g[l] = inv_cov_g[1,0] + inv_cov_g[1,1]
-        #curl
-        try:
-            inv_cov_c = np.linalg.inv(Cov_c[l])
-        except LinAlgError as e:
-            print(l,Cov_c[l])
-            raise(e)
-        w_XY_c[l] = inv_cov_c[0,0] + inv_cov_c[0,1]
-        w_YX_c[l] = inv_cov_c[1,0] + inv_cov_c[1,1]      
-
-    w_sum_g = w_XY_g+w_YX_g
-    w_sum_c = w_XY_c+w_YX_c
-    #w_XY_g[lmin:lmax+1] = w_XY_g[lmin:lmax+1]/w_sum_g[lmin:lmax+1]
-    #w_YX_g[lmin:lmax+1] = w_YX_g[lmin:lmax+1]/w_sum_g[lmin:lmax+1]
-    #w_XY_c[lmin:lmax+1] = w_XY_c[lmin:lmax+1]/w_sum_c[lmin:lmax+1]
-    #w_YX_c[lmin:lmax+1] = w_YX_c[lmin:lmax+1]/w_sum_c[lmin:lmax+1]
-    w_XY_g[2:mlmax+1] = w_XY_g[2:mlmax+1]/w_sum_g[2:mlmax+1]
-    w_YX_g[2:mlmax+1] = w_YX_g[2:mlmax+1]/w_sum_g[2:mlmax+1]
-    w_XY_c[2:mlmax+1] = w_XY_c[2:mlmax+1]/w_sum_c[2:mlmax+1]
-    w_YX_c[2:mlmax+1] = w_YX_c[2:mlmax+1]/w_sum_c[2:mlmax+1]
-    
-    
-    def qfunc_sym(X, Y, phi_XY=None, phi_YX=None):
-
-        #By default, we calculate the asymmetric estimates
-        #phi_XY and phi_YX here, but if you've already 
-        #calculated them, you can provide them as optional
-        #arguments here
-        if phi_XY is None:
-            phi_XY = qfunc_XY(X, Y)
-        if phi_YX is None:
-            phi_YX = qfunc_YX(Y, X)
-        
-        phi_sym_grad = (curvedsky.almxfl(phi_XY[0], w_XY_g)
-                   +curvedsky.almxfl(phi_YX[0], w_YX_g)
-                  )
-        phi_sym_curl = (curvedsky.almxfl(phi_XY[1], w_XY_c)
-                   +curvedsky.almxfl(phi_YX[1], w_YX_c)
-                  )
-        return (phi_sym_grad, phi_sym_curl)
-
-    def get_fg_trispectrum_N0_sym(clfg_X, clfg_Y, clfg_XY):
-        """
-        The N0 for the foreground trispectrum when using
-        the symmetrized estimator
-        The symmetrized estimator is 
-        kappa_sym = w_XY*kappa_XY + w_YX*kappa_YX
-        so N0^sym = <kappa_sym kappa_sym>
-                  = w_XY^2 * N0^XY + w_YX^2 * N0^YX
-                    + 2*w_XY*w_YX*N0^XYYX
-        """
-        N0_fg_XYXY = get_fg_trispectrum_N0_XYXY(
-            clfg_X, clfg_Y, clfg_XY)
-        N0_fg_XYYX = get_fg_trispectrum_N0_XYYX(
-            clfg_X, clfg_Y, clfg_XY)
-        N0_fg_YXYX = get_fg_trispectrum_N0_YXYX(
-            clfg_X, clfg_Y, clfg_XY)
-        N0_fg_sym = (
-            w_XY_g**2 * N0_fg_XYXY[0]
-            +w_YX_g**2 * N0_fg_YXYX[0]
-            +2*w_XY_g*w_YX_g * N0_fg_XYYX[0],
-            w_XY_c**2 * N0_fg_XYXY[1]
-            +w_YX_c**2 * N0_fg_YXYX[1]
-            +2*w_XY_c*w_YX_c * N0_fg_XYYX[1],
-        )
-        return N0_fg_sym            
-    
-    #Return useful stuff
-    #- qfuncs to apply to maps
-    #- normalizations and N0s for the asymmetric estimators 
-    # for theory noise calculations (note these N0s are for 
-    # unnormalized estimators) 
-    #- For the symmetric estimator, also return the sum of 
-    # the weight functions used to combine the asymmetric
-    # estimators. I think this should be 1/N0 for the symmetric
-    # estimator? 
-    return {"qfunc_XY_incfilter" : qfunc_XY, "qfunc_YX_incfilter": qfunc_YX,
-            "qfunc_sym_incfilter" : qfunc_sym, "norm_tt_XY" : norm_tt_XY,
-            "norm_tt_YX" : norm_tt_YX, "N0_XYXY_phi" : N0_XYXY_phi,
-            "N0_XYYX_phi" : N0_XYYX_phi, "N0_YXYX_phi" : N0_YXYX_phi,
-            "w_sum_g" : w_sum_g, "w_sum_c" : w_sum_c,
-            "w_XY" : (w_XY_g, w_XY_c), "w_YX" : (w_YX_g, w_YX_c),
-            "get_fg_trispectrum_N0_XYXY": get_fg_trispectrum_N0_XYXY,
-            "get_fg_trispectrum_N0_YXYX": get_fg_trispectrum_N0_YXYX,
-            "get_fg_trispectrum_N0_XYYX": get_fg_trispectrum_N0_XYYX,
-            "get_fg_trispectrum_N0_sym": get_fg_trispectrum_N0_sym}
 
 def setup_recon(px, lmin, lmax, mlmax,
                 tcls_X, tcls_Y=None,
@@ -354,7 +107,7 @@ def setup_recon(px, lmin, lmax, mlmax,
     def filter_alms_X(alms):
         return filter_T(alms, tcls_X['TT'], lmin, lmax)
     """
-    recon_stuff["filter_alms_X"] = filter_alms_X
+    recon_stuff["filter"] = filter_alms_X
 
     if tcls_Y is None:
         qfunc_tt_X = solenspipe.get_qfunc(px, ucls, mlmax, "TT", Al1=norms_X['TT'])
@@ -407,7 +160,7 @@ def setup_recon(px, lmin, lmax, mlmax,
             recon_stuff["qfunc_tt_psh_incfilter"] = lambda X,Y: qfunc_tt_psh_X(filter_alms_X(X),
                                                                     filter_alms_X(Y))
             def get_fg_trispectrum_phi_N0_psh(cl_fg):
-                Ctot = tcls['TT']**2 / cl_fg
+                Ctot = tcls_X['TT']**2 / cl_fg
                 norm_lens = norm_lens_X
                 norm_fg = pytempura.norm_lens.qtt(
                     mlmax, lmin,
@@ -541,8 +294,669 @@ def setup_recon(px, lmin, lmax, mlmax,
 
     return recon_stuff
 
+def setup_sym_estimator(px, lmin, lmax, mlmax,
+                        cltot_X, cltot_Y, cltot_XY,
+                        do_psh=False, profile=None):
+    """
+    Setup quadratic estimators for case of a
+    pair of temperature maps X and Y. In particular,
+    return 'qfuncs' for the two asymmetric estimators
+    (i.e. Q[X,Y] and Q[Y,X]) and also the symmetrized
+    estimator from https://arxiv.org/abs/2004.01139.
+    These estimators are normalized. Also return 
+    theory N0s assuming the total Cls used in filters
+    are appropriate for the maps.
+    """
 
-def test_signal(nsim=10, use_mpi=False, from_pkl=False):
+    output = {} #dictionary for  outputs
+    
+    #get cls for gradient filter                                                                                                                      
+                      
+    ucls,_ = futils.get_theory_dicts(grad=True, lmax=mlmax)
+
+    cltot_X, cltot_Y, cltot_XY = (
+        cltot_X[:lmax+1], cltot_Y[:lmax+1], cltot_XY[:lmax+1]
+    )
+    
+    #Now get the norms
+    norm_args_YX = (mlmax, lmin, lmax, lmin,
+        lmax, lmax, ucls['TT'][:lmax+1], cltot_X,
+        cltot_Y)
+    norm_tt_YX = norm_general.qtt_asym("lens", *norm_args_YX)
+
+    norm_args_XY = (mlmax, lmin, lmax, lmin,
+        lmax, lmax, ucls['TT'][:lmax+1], cltot_Y,
+        cltot_X)
+    norm_tt_XY = norm_general.qtt_asym("lens", *norm_args_XY)
+
+    output["norm_tt_XY"] = norm_tt_XY
+    output["norm_tt_YX"] = norm_tt_YX
+    def filter_X(X):
+        return filter_T(X, cltot_X, lmin, lmax)
+    output["filter_X"] = filter_X
+    def filter_Y(Y):
+        return filter_T(Y, cltot_Y, lmin, lmax)
+    output["filter_Y"] = filter_Y
+
+    #Now get the N0s (need these for constructing
+    #symmetrized estimator)
+    #Note these are the noise on the *unnormalized*
+    #estimators
+    wL_X = 1./cltot_X
+    wL_Y = 1./cltot_Y
+    wGphi_X = (ucls['TT'][:lmax+1]/cltot_X)
+    wGphi_Y = (ucls['TT'][:lmax+1]/cltot_Y)
+
+    N0_XYXY_phi_nonorm = noise_spec.qtt_asym(
+        'lens', mlmax,lmin,lmax,
+         wL_X, wGphi_Y, wL_X, wGphi_Y,
+         cltot_X,cltot_Y,cltot_XY,cltot_XY)
+    
+    #Normalize the N0
+    N0_XYXY_phi = (N0_XYXY_phi_nonorm[0]*norm_tt_XY[0]**2,
+                  N0_XYXY_phi_nonorm[1]*norm_tt_XY[1]**2)
+
+    N0_XYYX_phi_nonorm = noise_spec.qtt_asym(
+        'lens', mlmax,lmin,lmax,
+         wL_X, wGphi_Y, wL_Y, wGphi_X,
+         cltot_XY, cltot_XY, cltot_X, cltot_Y)
+    N0_XYYX_phi = (N0_XYYX_phi_nonorm[0]*norm_tt_XY[0]*norm_tt_YX[0],
+                   N0_XYYX_phi_nonorm[1]*norm_tt_XY[1]*norm_tt_YX[1]
+                  )
+
+    N0_YXYX_phi_nonorm = noise_spec.qtt_asym(
+        'lens', mlmax,lmin,lmax,
+         wL_Y, wGphi_X, wL_Y, wGphi_X,
+         cltot_Y,cltot_X, cltot_XY,cltot_XY)
+    N0_YXYX_phi = (N0_YXYX_phi_nonorm[0]*norm_tt_YX[0]**2,
+                  N0_YXYX_phi_nonorm[1]*norm_tt_YX[1]**2)
+
+    output["N0_XYXY_phi"] = N0_XYXY_phi
+    output["N0_XYYX_phi"] = N0_XYYX_phi
+    output["N0_YXYX_phi"] = N0_YXYX_phi
+    
+    #Also will be useful to define here functions to get the
+    #tripsectrum N0 for foregrounds. 
+    def get_fg_trispectrum_N0_XYXY(clfg_X, clfg_Y, clfg_XY):
+        N0_XYXY_fg_phi_nonorm = noise_spec.qtt_asym(
+            'lens', mlmax, lmin, lmax,
+            1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
+            1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
+            clfg_X[:lmax+1], clfg_Y[:lmax+1],
+            clfg_XY[:lmax+1], clfg_XY[:lmax+1])
+        N0_XYXY_fg_phi = (N0_XYXY_fg_phi_nonorm[0]*norm_tt_XY[0]**2,
+                  N0_XYXY_fg_phi_nonorm[1]*norm_tt_XY[1]**2)
+        return N0_XYXY_fg_phi
+    output["get_fg_trispectrum_N0_XYXY"] = get_fg_trispectrum_N0_XYXY
+
+    def get_fg_trispectrum_N0_XYYX(clfg_X, clfg_Y, clfg_XY):
+        N0_XYYX_fg_phi_nonorm = noise_spec.qtt_asym(
+            'lens',mlmax,lmin,lmax,
+            1./cltot_X, ucls['TT'][:lmax+1]/cltot_Y,
+            1./cltot_Y, ucls['TT'][:lmax+1]/cltot_X,
+            clfg_XY[:lmax+1], clfg_XY[:lmax+1],
+            clfg_X[:lmax+1], clfg_Y[:lmax+1])
+        N0_XYYX_fg_phi = (N0_XYYX_fg_phi_nonorm[0]*norm_tt_XY[0]*norm_tt_YX[0],
+                       N0_XYYX_fg_phi_nonorm[1]*norm_tt_XY[1]*norm_tt_YX[1]
+        )
+        return N0_XYYX_fg_phi
+    output["get_fg_trispectrum_N0_XYYX"] = get_fg_trispectrum_N0_XYYX
+
+    def get_fg_trispectrum_N0_YXYX(clfg_X, clfg_Y, clfg_XY):
+        N0_YXYX_fg_phi_nonorm = noise_spec.qtt_asym(
+            'lens',mlmax,lmin,lmax,
+             1./cltot_Y, ucls['TT'][:lmax+1] / cltot_X,
+             1./cltot_Y, ucls['TT'][:lmax+1] / cltot_X,
+             clfg_Y[:lmax+1], clfg_X[:lmax+1],
+             clfg_XY[:lmax+1], clfg_XY[:lmax+1])
+        N0_YXYX_fg_phi = (N0_YXYX_fg_phi_nonorm[0]*norm_tt_YX[0]**2,
+                      N0_YXYX_fg_phi_nonorm[1]*norm_tt_YX[1]**2)
+        return N0_YXYX_fg_phi
+    output["get_fg_trispectrum_N0_YXYX"] = get_fg_trispectrum_N0_YXYX
+    
+    #Ok, so we have norms and N0s
+    #Now the qfuncs
+    def get_XY_filtered(X_filtered, Y_filtered, 
+                        X_nofilter=None, Y_nofilter=None):
+        if X_filtered is None:
+            X_filtered = filter_X(X_nofilter)
+            Y_filtered = filter_Y(Y_nofilter)
+        else:
+            assert X_filtered is not None
+            assert Y_filtered is not None
+            assert Y_nofilter is None
+        return X_filtered, Y_filtered
+    
+    def qfunc_XY(X_filtered, Y_filtered):
+        phi_nonorm = qe.qe_all(px,ucls,mlmax,
+                                fTalm=X_filtered,fEalm=None,fBalm=None,
+                                estimators=['TT'],
+                                xfTalm=Y_filtered,xfEalm=None,xfBalm=None)['TT']
+        #normalize and return
+        return (curvedsky.almxfl(phi_nonorm[0], norm_tt_XY[0]),
+                curvedsky.almxfl(phi_nonorm[1], norm_tt_XY[1]))
+    
+    
+    output["qfunc_XY"] = qfunc_XY
+    output["qfunc_XY_incfilter"] = lambda X,Y: qfunc_XY(filter_X(X), filter_Y(Y))
+    
+    def qfunc_YX(X_filtered, Y_filtered, 
+                 X_nofilter=None, Y_nofilter=None):
+
+        X_filtered, Y_filtered = get_XY_filtered(
+            X_filtered, Y_filtered, 
+            X_nofilter=X_nofilter, Y_nofilter=Y_nofilter)
+                
+        phi_nonorm = qe.qe_all(px,ucls,mlmax,
+                                fTalm=Y_filtered,fEalm=None,fBalm=None,
+                                estimators=['TT'],
+                                xfTalm=X_filtered,xfEalm=None,xfBalm=None)['TT']
+        #normalize and return
+        return (curvedsky.almxfl(phi_nonorm[0], norm_tt_YX[0]),
+                curvedsky.almxfl(phi_nonorm[1], norm_tt_YX[1]))
+    
+    output["qfunc_YX"] = qfunc_YX
+    output["qfunc_YX_incfilter"] = lambda X,Y: qfunc_YX(filter_X(X), filter_Y(Y))
+                                                        
+
+    if do_psh:
+        #We'll need the following normalization and
+        #response functions 
+        #first the src norms
+        norm_src_YX = norm_general.qtt_asym(
+            "src", *norm_args_YX)[0] #tempura returns dummy 
+                                     #curl component for src
+        norm_src_XY = norm_general.qtt_asym(
+            "src", *norm_args_XY)[0] #I think this should be the same as YX?
+        output["norm_src_YX"] = norm_src_YX
+        output["norm_src_XY"] = norm_src_XY
+        #now the responses
+        R_phi_src_YX = norm_general.xtt_asym(
+            "lenssrc", *norm_args_YX)
+        output["R_phi_src_YX"] = R_phi_src_YX
+        R_phi_src_XY = norm_general.xtt_asym(
+            "lenssrc", *norm_args_XY)
+        output["R_phi_src_XY"] = R_phi_src_XY
+        R_src_phi_YX = norm_general.xtt_asym(
+            "srclens", *norm_args_YX)
+        output["R_src_phi_YX"] = R_src_phi_YX
+        R_src_phi_XY = norm_general.xtt_asym(
+            "srclens", *norm_args_XY)
+        output["R_src_phi_XY"] = R_src_phi_XY
+
+        #The noise on the bias-hardened estimator ABCD is
+        # ((R^AB)^-1) N0 ((R^CD)^-1)^T
+        # where R^AB is the response matrix
+        # R^AB = ( 1    A_x^AB R_xy^AB)
+        #        (A_y^AB R_yx^AB    1 )
+        # and N0 is a matrix
+        # N0 = ( N^0_xx  N^0_xy )
+        #      ( N^0_yx  N^0_yx )
+        # will need to test the xy etc. ordering here...
+        wLsrc_X = wL_X.copy()
+        wLsrc_Y = wL_Y.copy()
+        wGsrc_X = 1./cltot_X[:lmax+1]/2
+        wGsrc_Y = 1./cltot_Y[:lmax+1]/2
+
+        def get_inverse_response_matrix(A_phi, A_src, R_phi_src, R_src_phi):
+            R = np.ones((mlmax+1, 2, 2))
+            R[:,0,1] = (A_phi * R_phi_src).copy()
+            R[:,1,0] = (A_src * R_src_phi).copy()
+            R_inv = np.zeros_like(R)
+            for l in range(mlmax+1):
+                R_inv[l] = np.linalg.inv(R[l])
+            return R_inv
+
+
+        def get_N0_matrix_psh(
+                N0_phi, N0_phi_src, 
+                N0_src_phi, N0_src, 
+                R_AB_inv, R_CD_inv):
+            #these input N0s should be normalized!!!
+            
+            N0_matrix = np.zeros((mlmax+1, 2, 2))
+            for N0 in (N0_phi, N0_phi_src, N0_src_phi, N0_src):
+                assert N0.shape == (mlmax+1,)
+            N0_matrix[:,0,0] = N0_phi.copy()
+            N0_matrix[:,0,1] = N0_phi_src.copy()
+            N0_matrix[:,1,0] = N0_src_phi.copy()
+            N0_matrix[:,1,1] = N0_src.copy()
+            
+            #now the psh version
+            N0_matrix_psh = np.zeros_like(N0_matrix)
+            for l in range(mlmax+1):
+                N0_matrix_psh[l] = np.dot(
+                    np.dot(R_AB_inv[l], N0_matrix[l]), (R_CD_inv[l]).T)
+            #0,0 element is the phi_bh N0
+            return N0_matrix_psh
+            
+        #Get response matrices
+        #and N0s
+        R_matrix_XY_inv = get_inverse_response_matrix(
+            norm_tt_XY[0], norm_src_XY,
+            R_phi_src_XY, R_src_phi_XY)
+        R_matrix_YX_inv = get_inverse_response_matrix(
+            norm_tt_YX[0], norm_src_YX,
+            R_phi_src_YX, R_src_phi_YX)
+        
+        #should make the whole polava 
+        #for getting the psh
+        #N0 a function really, as we do it
+        #6 times below. Could look like the 
+        #following:
+        """
+        def get_N0_ABCD_psh_matrix(
+            wL_A, wGphi_A, wLsrc_A,
+            wL_B, wGphi_B, wLsrc_B,
+            wL_C, wGphi_C, wLsrc_C,
+            wL_D, wGphi_D, wLsrc_D,
+            cltot_AC, cltot_BD, cltot_AD, cltot_BC,
+            N0_phi = None):
+            
+            if N0_phi None:
+                N0_phi
+        """
+        #For the N0, we need to calculate,
+        #and then normalize, the src-src,
+        #phi-src and src-phi N0s. The bias-hardened
+        #N0 matrix is constructed from this
+        #First the XYXY case
+        N0_XYXY_src_nonorm = noise_spec.qtt_asym(
+            "src", mlmax,lmin,lmax,
+            wL_X, wGsrc_Y, wL_X, wGsrc_Y,
+            cltot_X, cltot_Y, cltot_XY, cltot_XY)[0]
+        N0_XYXY_src = (
+            N0_XYXY_src_nonorm
+            *norm_src_XY*norm_src_XY)
+        output["N0_XYXY_src"] = N0_XYXY_src
+        
+        N0_XYXY_phi_src_nonorm = noise_spec.xtt_asym(
+            "lenssrc", mlmax,lmin,lmax,
+            wL_X, wGphi_Y, wL_X, wGsrc_Y,
+            cltot_X, cltot_Y, cltot_XY, cltot_XY)
+        N0_XYXY_phi_src = (
+            N0_XYXY_phi_src_nonorm
+            *norm_tt_XY[0]*norm_src_XY)
+        output["N0_XYXY_phi_src"] = N0_XYXY_phi_src
+        
+        N0_XYXY_src_phi_nonorm = noise_spec.xtt_asym(
+            "srclens", mlmax,lmin,lmax,
+            wL_X, wGsrc_Y, wL_X, wGphi_Y,
+            cltot_X, cltot_Y, cltot_XY, cltot_XY)
+        N0_XYXY_src_phi = (
+            N0_XYXY_src_phi_nonorm
+            *norm_tt_XY[0]*norm_src_XY)
+        output["N0_XYXY_src_phi"] = N0_XYXY_src_phi
+        
+        #now put together to get N0 psh matrix
+        N0_matrix_XYXY_psh = get_N0_matrix_psh(
+            N0_XYXY_phi[0], N0_XYXY_phi_src,
+            N0_XYXY_src_phi, N0_XYXY_src,
+            R_matrix_XY_inv, R_matrix_XY_inv)
+            
+        #Now the XYYX case
+        N0_XYYX_src_nonorm = noise_spec.qtt_asym(
+            "src", mlmax,lmin,lmax,
+             wL_X, wGsrc_Y, wL_Y, wGsrc_X,
+             cltot_XY, cltot_XY, cltot_X, cltot_Y)[0]
+        N0_XYYX_src = (
+            N0_XYYX_src_nonorm
+            *norm_src_XY*norm_src_YX)
+        N0_XYYX_phi_src_nonorm = noise_spec.xtt_asym(
+            "lenssrc", mlmax,lmin,lmax,
+            wL_X, wGphi_Y, wL_Y, wGsrc_X,
+            cltot_XY, cltot_XY, cltot_X, cltot_Y)
+        N0_XYYX_phi_src = (
+            N0_XYYX_phi_src_nonorm
+            *norm_tt_XY[0]*norm_src_YX)
+        N0_XYYX_src_phi_nonorm = noise_spec.xtt_asym(
+            "srclens", mlmax,lmin,lmax,
+            wL_X, wGsrc_Y, wL_Y, wGphi_X,
+            cltot_XY, cltot_XY, cltot_X, cltot_Y)
+        N0_XYYX_src_phi = (
+            N0_XYYX_src_phi_nonorm
+            *norm_src_XY*norm_tt_YX[0])
+        #now put together to get N0 psh matrix
+        N0_matrix_XYYX_psh = get_N0_matrix_psh(
+            N0_XYYX_phi[0], N0_XYYX_phi_src,
+            N0_XYYX_src_phi, N0_XYYX_src,
+            R_matrix_XY_inv, R_matrix_YX_inv)
+        
+        #And finally YXYX case
+        N0_YXYX_src_nonorm = noise_spec.qtt_asym(
+        'src', mlmax,lmin,lmax,
+         wL_Y, wGsrc_X, wL_Y, wGsrc_X,
+         cltot_Y,cltot_X, cltot_XY,cltot_XY)[0]
+        N0_YXYX_src = (
+            N0_YXYX_src_nonorm*norm_src_YX**2)
+        N0_YXYX_phi_src_nonorm = noise_spec.xtt_asym(
+            "lenssrc", mlmax,lmin,lmax,
+             wL_Y, wGphi_X, wL_Y, wGsrc_X,
+             cltot_Y,cltot_X, cltot_XY,cltot_XY)
+        N0_YXYX_phi_src = (
+            N0_YXYX_phi_src_nonorm
+            *norm_tt_YX[0]*norm_src_YX)
+        N0_YXYX_src_phi_nonorm = noise_spec.xtt_asym(
+            "srclens", mlmax,lmin,lmax,
+             wL_Y, wGsrc_X, wL_Y, wGphi_X,
+             cltot_Y,cltot_X, cltot_XY,cltot_XY)
+        N0_YXYX_src_phi = (
+            N0_YXYX_src_phi_nonorm
+            *norm_src_YX*norm_tt_YX[0])
+        #now put together to get N0 psh matrix
+        N0_matrix_YXYX_psh = get_N0_matrix_psh(
+            N0_YXYX_phi[0], N0_YXYX_phi_src,
+            N0_YXYX_src_phi, N0_YXYX_src,
+            R_matrix_YX_inv, R_matrix_YX_inv)
+        
+        #N0 for source-hardened phi is the 0,0th 
+        #element of the N0 matrix (at each l)
+        N0_XYXY_phi_psh = N0_matrix_XYXY_psh[:,0,0].copy()
+        N0_XYYX_phi_psh = N0_matrix_XYYX_psh[:,0,0].copy()
+        N0_YXYX_phi_psh = N0_matrix_YXYX_psh[:,0,0].copy()
+        output["N0_XYXY_phi_psh"] = (N0_XYXY_phi_psh,None)
+        output["N0_XYYX_phi_psh"] = (N0_XYYX_phi_psh,None)
+        output["N0_YXYX_phi_psh"] = (N0_YXYX_phi_psh,None)
+        
+        #Ok. Fuck, that was complicated.
+        #But we do now have the
+        #response matrices and N0s.
+        #Now we can define the qfuncs
+        def qfunc_XY_psh(X_filtered, Y_filtered):
+
+            #first run the source estimator
+            s_nobh_nonorm = qe.qe_source(
+                px, mlmax, X_filtered,
+                xfTalm=Y_filtered)
+            #and normalize
+            s_nobh = curvedsky.almxfl(s_nobh_nonorm, norm_src_XY)
+
+            #And now the phi estimator
+            #            almxfl(phi_nobh[1], norm_tt_XY[1]))
+            phi_nobh = qfunc_XY(X_filtered, Y_filtered)
+
+            #The bias-hardened estimator is
+            # (phi_bh ) = R^-1 (phi_nobh)
+            # (s_bh   )        (s_nobh)
+            # so phi_bh = (R_inv)_00 * phi_nobh
+            #           + (R_inv)_01 * s_nobh
+            phi_bh = (curvedsky.almxfl(phi_nobh[0], R_matrix_XY_inv[:,0,0])
+                      +curvedsky.almxfl(s_nobh, R_matrix_XY_inv[:,0,1])
+                      )
+            #note no curl component
+            return (phi_bh, None)
+        
+        def qfunc_YX_psh(X_filtered, Y_filtered):
+                                                                 
+            s_nobh_nonorm = qe.qe_source(
+                px, mlmax, Y_filtered,
+                xfTalm=X_filtered)
+            #and normalize
+            s_nobh = curvedsky.almxfl(s_nobh_nonorm, norm_src_YX)
+
+            #And now the phi estimator
+            phi_nobh = qfunc_YX(X_filtered, Y_filtered)
+            phi_bh = (curvedsky.almxfl(phi_nobh[0], R_matrix_YX_inv[:,0,0])
+                      +curvedsky.almxfl(s_nobh, R_matrix_YX_inv[:,0,1])
+                      )
+            #note no curl component
+            return (phi_bh, None)
+        
+        output["qfunc_XY_psh"] = qfunc_XY_psh
+        output["qfunc_XY_psh_incfilter"] = lambda X,Y:  qfunc_XY_psh(
+            filter_X(X), filter_Y(Y))
+        output["qfunc_YX_psh"] = qfunc_YX_psh
+        output["qfunc_YX_psh_incfilter"] = lambda X,Y: qfunc_YX_psh(
+            filter_X(X), filter_Y(Y))
+                                                                 
+        
+        #Also will be useful to define here functions to get the
+        #tripsectrum N0 for foregrounds. We need to do the same 
+        #N0 calculations as above basically, but swapping cltot_AB
+        #for clfg_AB. 
+        def get_fg_trispectrum_N0_psh_XYXY(clfg_X, clfg_Y, clfg_XY):
+            
+            N0_tri_XYXY_phi = get_fg_trispectrum_N0_XYXY(
+                clfg_X, clfg_Y, clfg_XY)
+            
+            N0_tri_XYXY_src_nonorm = noise_spec.qtt_asym(
+                "src", mlmax,lmin,lmax,
+                wL_X, wGsrc_Y, wL_X, wGsrc_Y,
+                clfg_X, clfg_Y, clfg_XY, clfg_XY)
+            N0_tri_XYXY_src = (
+                N0_tri_XYXY_src_nonorm
+                *norm_src_XY*norm_src_XY)
+            N0_tri_XYXY_phi_src_nonorm = noise_spec.xtt_asym(
+                "lenssrc", mlmax,lmin,lmax,
+                wL_X, wGphi_Y, wL_X, wGsrc_Y,
+                clfg_X, clfg_Y, clfg_XY, clfg_XY)
+            N0_tri_XYXY_phi_src = (
+                N0_tri_XYXY_phi_src_nonorm
+                *norm_tt_XY[0]*norm_src_XY)
+            N0_tri_XYXY_src_phi_nonorm = noise_spec.xtt_asym(
+                "srclens", mlmax,lmin,lmax,
+                wL_X, wGsrc_Y, wL_X, wGphi_Y,
+                clfg_X, clfg_Y, clfg_XY, clfg_XY)
+            N0_tri_XYXY_src_phi = (
+                N0_XYXY_phi_src_nonorm
+                *norm_tt_XY[0]*norm_src_XY)
+            #now put together to get N0 psh matrix
+            N0_tri_matrix_XYXY_psh = get_N0_matrix_psh(
+                N0_tri_XYXY_phi[0], N0_tri_XYXY_phi_src,
+                N0_tri_XYXY_src_phi, N0_tri_XYXY_src,
+                R_matrix_XY_inv, R_matrix_XY_inv)
+
+            return N0_tri_matrix_XYXY_psh[:,0,0]
+
+        def get_fg_trispectrum_N0_psh_XYYX(clfg_X, clfg_Y, clfg_XY):
+            N0_tri_XYYX_phi = get_fg_trispectrum_N0_XYYX(
+                clfg_X, clfg_Y, clfg_XY)
+            N0_tri_XYYX_src_nonorm = noise_spec.qtt_asym(
+                "src", mlmax,lmin,lmax,
+                 wL_X, wGsrc_Y, wL_Y, wGsrc_X,
+                 clfg_XY, clfg_XY, clfg_X, clfg_Y)[0]
+            N0_tri_XYYX_src = (
+                N0_tri_XYYX_src_nonorm
+                *norm_src_XY*norm_src_YX)
+            N0_tri_XYYX_phi_src_nonorm = noise_spec.xtt_asym(
+                "lenssrc", mlmax,lmin,lmax,
+                wL_X, wGphi_Y, wL_Y, wGsrc_X,
+                clfg_XY, clfg_XY, clfg_X, clfg_Y)
+            N0_tri_XYYX_phi_src = (
+                N0_tri_XYYX_phi_src_nonorm
+                *norm_tt_XY[0]*norm_src_YX)
+            N0_tri_XYYX_src_phi_nonorm = noise_spec.xtt_asym(
+                "srclens", mlmax,lmin,lmax,
+                wL_X, wGsrc_Y, wL_Y, wGphi_X,
+                clfg_XY, clfg_XY, clfg_X, clfg_Y)
+            N0_tri_XYYX_src_phi = (
+                N0_XYYX_src_phi_nonorm
+                *norm_src_XY*norm_tt_YX[0])
+            #now put together to get N0 psh matrix
+            N0_tri_matrix_XYYX_psh = get_N0_matrix_psh(
+                N0_tri_XYYX_phi[0], N0_tri_XYYX_phi_src,
+                N0_tri_XYYX_src_phi, N0_tri_XYYX_src,
+                R_matrix_XY_inv, R_matrix_YX_inv)
+            return N0_tri_matrix_XYYX_psh[:,0,0]
+
+        def get_fg_trispectrum_N0_psh_YXYX(clfg_X, clfg_Y, clfg_XY):
+            N0_tri_YXYX_phi = get_fg_trispectrum_N0_YXYX(
+                clfg_X, clfg_Y, clfg_XY)
+            N0_tri_YXYX_src_nonorm = noise_spec.qtt_asym(
+            'src', mlmax,lmin,lmax,
+             wL_Y, wGsrc_X, wL_Y, wGsrc_X,
+             clfg_Y,clfg_X, clfg_XY,clfg_XY)
+            N0_tri_YXYX_src = (
+                N0_tri_YXYX_src_nonorm*norm_src**2)
+            N0_tri_YXYX_phi_src_nonorm = noise_spec.xtt_asym(
+                "lenssrc", mlmax,lmin,lmax,
+                 wL_Y, wGphi_X, wL_Y, wGsrc_X,
+                 clfg_Y,clfg_X, clfg_XY,clfg_XY)
+            N0_tri_YXYX_phi_src = (
+                N0_tri_YXYX_phi_src_nonorm
+                *norm_tt_YX[0]*norm_src_YX)
+            N0_tri_YXYX_phi_src_nonorm = noise_spec.xtt_asym(
+                "srclens", mlmax,lmin,lmax,
+                 wL_Y, wGsrc_X, wL_Y, wGphi_X,
+                 clfg_Y,clfg_X, clfg_XY,clfg_XY)
+            N0_tri_YXYX_src_phi = (
+                N0_tri_YXYX_src_phi_nonorm
+                *norm_src_YX*norm_tt_YX[0])
+            #now put together to get N0 psh matrix
+            N0_tri_matrix_YXYX_psh = get_N0_matrix_psh(
+                N0_tri_YXYX_phi[0], N0_tri_YXYX_phi_src,
+                N0_tri_YXYX_src_phi, N0_tri_YXYX_src,
+                R_matrix_YX_inv, R_matrix_YX_inv)
+            return N0_tri_matrix_YXYX_psh[:,0,0]
+
+        output["get_fg_trispectrum_N0_XYXY"] = get_fg_trispectrum_N0_XYXY
+        output["get_fg_trispectrum_N0_XYYX"] = get_fg_trispectrum_N0_XYYX
+        output["get_fg_trispectrum_N0_YXYX"] = get_fg_trispectrum_N0_YXYX
+        
+    def get_sym_weights(N0_XYXY_phi, N0_XYYX_phi, N0_YXYX_phi):
+        #Now get weights etc. for symmetric estimator
+        #The symmetrized version is a linear combination of these two,
+        #weighted by the inverse covariance
+        #i.e. phi_sym(L) = (C)^-1_L [phi_XY(L) phi_YX(L)]^T
+        #So at each L, we need to compute the covariance 
+        #C = [[N0^XYXY, N0^XYYX],[N0^XYYX, N0^YXYX]],
+        #invert and sum
+        Cov = np.zeros((mlmax+1, 2, 2))
+        Cov[:,0,0] = N0_XYXY_phi.copy()
+        Cov[:,0,1] = N0_XYYX_phi.copy()
+        Cov[:,1,1] = N0_YXYX_phi.copy()
+        Cov[:,1,0] = Cov[:,0,1]
+
+        w_XY = np.zeros(mlmax+1)
+        w_YX = np.zeros(mlmax+1)
+        for l in range(2, mlmax+1):
+            try:
+                inv_cov = np.linalg.inv(Cov[l])
+            except Exception as e:
+                print(l,Cov[l])
+                raise(e)
+            w_XY[l] = inv_cov[0,0] + inv_cov[0,1]
+            w_YX[l] = inv_cov[1,0] + inv_cov[1,1]
+
+        w_sum = w_XY+w_YX
+        w_XY[2:mlmax+1] = w_XY[2:mlmax+1]/w_sum[2:mlmax+1]
+        w_YX[2:mlmax+1] = w_YX[2:mlmax+1]/w_sum[2:mlmax+1]
+        return w_XY, w_YX, w_sum
+    
+    w_XY_g, w_YX_g, w_sum_g = get_sym_weights(
+        N0_XYXY_phi[0], N0_XYYX_phi[0], N0_YXYX_phi[0])
+    w_XY_c, w_YX_c, w_sum_c = get_sym_weights(
+        N0_XYXY_phi[1], N0_XYYX_phi[1], N0_YXYX_phi[1])
+    output["w_XY"] = (w_XY_g, w_XY_c)
+    output["w_YX"] = (w_YX_g, w_YX_c)
+    output["w_sum"] = (w_sum_g, w_sum_c)
+    output["N0_sym_phi"] = (1./w_sum_g, 1./w_sum_c)
+    
+    def get_qfunc_sym(w_XY, w_YX, qfunc_XY, qfunc_YX):
+        def qfunc_sym(X_filtered, Y_filtered, phi_XY=None, phi_YX=None):
+
+            #By default, we calculate the asymmetric estimates
+            #phi_XY and phi_YX here, but if you've already 
+            #calculated them, you can provide them as optional
+            #arguments here
+            if phi_XY is None:
+                 phi_XY = qfunc_XY(
+                    X_filtered, Y_filtered)
+
+            if phi_YX is None:
+                phi_YX = qfunc_YX(
+                    X_filtered, Y_filtered)
+
+            phi_sym_grad = (curvedsky.almxfl(phi_XY[0], w_XY[0])
+                       +curvedsky.almxfl(phi_YX[0], w_YX[0])
+                      )
+            if phi_XY[1] is not None:
+                phi_sym_curl = (curvedsky.almxfl(phi_XY[1], w_XY[1])
+                           +curvedsky.almxfl(phi_YX[1], w_YX[1])
+                          )
+            else:
+                phi_sym_curl = None
+            
+            return (phi_sym_grad, phi_sym_curl)
+        return qfunc_sym
+        
+    output["qfunc_sym"] = get_qfunc_sym(
+        (w_XY_g, w_XY_c), (w_YX_g, w_YX_c), qfunc_XY, qfunc_YX)
+    def qfunc_sym_incfilter(X, Y, phi_XY=None, phi_YX=None):
+        return output["qfunc_sym"](filter_X(X), filter_Y(Y),
+                                   phi_XY=phi_XY, phi_YX=phi_YX)
+    output["qfunc_sym_incfilter"] = qfunc_sym_incfilter
+                                                                
+
+    def get_fg_trispectrum_N0_sym(clfg_X, clfg_Y, clfg_XY):
+        """
+        The N0 for the foreground trispectrum when using
+        the symmetrized estimator
+        The symmetrized estimator is 
+        kappa_sym = w_XY*kappa_XY + w_YX*kappa_YX
+        so N0^sym = <kappa_sym kappa_sym>
+                  = w_XY^2 * N0^XY + w_YX^2 * N0^YX
+                    + 2*w_XY*w_YX*N0^XYYX
+        """
+        N0_fg_XYXY = get_fg_trispectrum_N0_XYXY(
+            clfg_X, clfg_Y, clfg_XY)
+        N0_fg_XYYX = get_fg_trispectrum_N0_XYYX(
+            clfg_X, clfg_Y, clfg_XY)
+        N0_fg_YXYX = get_fg_trispectrum_N0_YXYX(
+            clfg_X, clfg_Y, clfg_XY)
+        N0_fg_sym = (
+            w_XY_g**2 * N0_fg_XYXY[0]
+            +w_YX_g**2 * N0_fg_YXYX[0]
+            +2*w_XY_g*w_YX_g * N0_fg_XYYX[0],
+            w_XY_c**2 * N0_fg_XYXY[1]
+            +w_YX_c**2 * N0_fg_YXYX[1]
+            +2*w_XY_c*w_YX_c * N0_fg_XYYX[1],
+        )
+        return N0_fg_sym   
+    output["get_fg_trispectrum_N0_sym"] = get_fg_trispectrum_N0_sym
+    
+    if do_psh:
+        w_XY_psh, w_YX_psh, w_sum_psh = get_sym_weights(
+            N0_XYXY_phi_psh, N0_XYYX_phi_psh, N0_YXYX_phi_psh)
+        output["w_XY_psh"] = w_XY_psh
+        output["w_YX_psh"] = w_YX_psh
+        output["w_sum_psh"] = w_sum_psh
+        output["N0_sym_phi_psh"] = (1./w_sum_psh, None)
+        output["qfunc_sym_psh"] = get_qfunc_sym(
+            (w_XY_psh,None), (w_YX_psh,None), qfunc_XY_psh, qfunc_YX_psh)
+        def qfunc_sym_psh_incfilter(X, Y, phi_XY=None, phi_YX=None):
+            return output["qfunc_psh_sym"](filter_X(X), filter_Y(Y),
+                                       phi_XY=phi_XY, phi_YX=phi_YX)
+        output["qfunc_sym_psh_incfilter"] = qfunc_sym_psh_incfilter
+        
+        def get_fg_trispectrum_N0_psh_sym(clfg_X, clfg_Y, clfg_XY):
+            """
+            The N0 for the foreground trispectrum when using
+            the symmetrized estimator
+            The symmetrized estimator is 
+            kappa_sym = w_XY*kappa_XY + w_YX*kappa_YX
+            so N0^sym = <kappa_sym kappa_sym>
+                      = w_XY^2 * N0^XY + w_YX^2 * N0^YX
+                        + 2*w_XY*w_YX*N0^XYYX
+            """
+            N0_fg_XYXY_psh = get_fg_trispectrum_N0_psh_XYXY(
+                clfg_X, clfg_Y, clfg_XY)
+            N0_fg_XYYX_psh = get_fg_trispectrum_N0_psh_XYYX(
+                clfg_X, clfg_Y, clfg_XY)
+            N0_fg_YXYX_psh = get_fg_trispectrum_N0_psh_YXYX(
+                clfg_X, clfg_Y, clfg_XY)
+            N0_fg_sym_psh = (
+                w_XY_psh**2 * N0_fg_XYXY_psh
+                +w_YX_psh**2 * N0_fg_YXYX_psh
+                +2*w_XY_psh*w_YX_psh * N0_fg_XYYX_psh
+            )
+            return N0_fg_sym_psh
+        
+        output["get_fg_trispectrum_N0_sym"] = get_fg_trispectrum_N0_sym
+    
+    return output
+
+def test_sym_signal(nsim=10, use_mpi=False, from_pkl=False):
     if use_mpi:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
@@ -613,9 +1027,10 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
         # Setup the symmetrized estimator
         sym_setup = setup_sym_estimator(px, lmin, lmax, mlmax,
                                 cltot_X, cltot_Y, cltot_XY)
-        qfunc_XY = sym_setup["qfunc_XY_incfilter"]
-        qfunc_YX = sym_setup["qfunc_YX_incfilter"]
-        qfunc_sym = sym_setup["qfunc_sym_incfilter"]
+        qfunc_XY = sym_setup["qfunc_XY"]
+        qfunc_YX = sym_setup["qfunc_YX"]
+        qfunc_sym = sym_setup["qfunc_sym"]
+        filter_X, filter_Y = sym_setup["filter_X"], sym_setup["filter_Y"]
         
         #Loop through sims 
         #- getting cmb alms
@@ -652,10 +1067,12 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
 
             sky_alm_X = cmb_alm+noise_alm_X
             sky_alm_Y = cmb_alm+noise_alm_Y
+            X_filtered = filter_X(sky_alm_X)
+            Y_filtered = filter_Y(sky_alm_Y)
 
             print("running phi estimators")
-            phi_XY = qfunc_XY(sky_alm_X, sky_alm_Y)
-            phi_YX = qfunc_YX(sky_alm_X, sky_alm_Y)
+            phi_XY = qfunc_XY(X_filtered, Y_filtered)
+            phi_YX = qfunc_YX(X_filtered, Y_filtered)
             phi_sym = qfunc_sym(
                 None, None, phi_XY=phi_XY, phi_YX=phi_YX
             )
@@ -873,9 +1290,10 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
         # Setup the symmetrized estimator
         sym_setup = setup_sym_estimator(px, lmin, lmax, mlmax,
                                 cltot_X, cltot_Y, cltot_XY)
-        qfunc_XY = sym_setup["qfunc_XY_incfilter"]
-        qfunc_YX = sym_setup["qfunc_YX_incfilter"]
-        qfunc_sym = sym_setup["qfunc_sym_incfilter"]
+        qfunc_XY = sym_setup["qfunc_XY"]
+        qfunc_YX = sym_setup["qfunc_YX"]
+        qfunc_sym = sym_setup["qfunc_sym"]
+        filter_X, filter_Y = sym_setup["filter_X"], sym_setup["filter_Y"]
 
         #Also want to test foreground trispectrum
         #Let's assume map Y has 1/10th of the foreground
@@ -921,15 +1339,19 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
 
             cmb_alm = curvedsky.rand_alm(tcls_nonoise['TT'],
                                           seed=isim*nsim+2)
-            gaussian_alm_X = cmb_alm+noise_alm_X
-            gaussian_alm_Y = cmb_alm+noise_alm_Y
+            X = cmb_alm+noise_alm_X
+            Y = cmb_alm+noise_alm_Y
+            X_filtered = filter_X(X)
+            Y_filtered = filter_Y(Y)
 
-            gaussian_fg_alm_X = curvedsky.rand_alm(cl_fg_X, seed=isim*nsim)
-            gaussian_fg_alm_Y = 0.1*gaussian_fg_alm_X
+            fg_X = curvedsky.rand_alm(cl_fg_X, seed=isim*nsim)
+            fg_Y = 0.1*gaussian_fg_alm_X
+            fg_X_filtered = filter_X(fg_X)
+            fg_Y_filtered = filter_Y(fg_Y)
             
             print("running phi estimators")
-            phi_XY = qfunc_XY(gaussian_alm_X, gaussian_alm_Y)
-            phi_YX = qfunc_YX(gaussian_alm_X, gaussian_alm_Y)
+            phi_XY = qfunc_XY(X_filtered, Y_filtered)
+            phi_YX = qfunc_YX(X_filtered, Y_filtered)
             phi_sym = qfunc_sym(
                 None, None, phi_XY=phi_XY, phi_YX=phi_YX)
 
@@ -938,8 +1360,8 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
             kappa_sym = lensing.phi_to_kappa(phi_sym[0])
 
             #run on foreground sim to test trispectrum N0
-            phi_fg_XY = qfunc_XY(gaussian_fg_alm_X, gaussian_fg_alm_Y)
-            phi_fg_YX = qfunc_YX(gaussian_fg_alm_X, gaussian_fg_alm_Y)
+            phi_fg_XY = qfunc_XY(fg_X_filtered, fg_Y_filtered)
+            phi_fg_YX = qfunc_YX(fg_X_filtered, fg_Y_filtered)
             phi_fg_sym = qfunc_sym(
                 None, None, phi_XY=phi_fg_XY, phi_YX=phi_fg_YX)
 
@@ -1080,8 +1502,10 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
         fig.tight_layout()
         fig.savefig(opj(outdir, "N0_fg_trispectrum_test.png"), dpi=200)
 
+
 def get_TT_secondary(qfunc_incfilter, Tf1,
-                     Tcmb, Tcmb_prime, Tf2=None):
+                     Tcmb, Tcmb_prime, 
+                     Tf2=None):
     #Secondary is 
     #<(Q[Tcmb, Tf_2]+Q[Tf_1, Tcmb])(Q[Tcmb, Tf_2]+Q[Tf_1, Tcmb])>
     #to remove noise bias we need to subtract
@@ -1091,10 +1515,14 @@ def get_TT_secondary(qfunc_incfilter, Tf1,
     #by an independent kappa
     if Tf2 is None:
         Tf2 = Tf1
-    phi_Tcmb_Tf2 = qfunc_incfilter(Tcmb, Tf2)
-    phi_Tf1_Tcmb = qfunc_incfilter(Tf1, Tcmb)
-    phi_Tcmbp_Tf2 = qfunc_incfilter(Tcmb_prime, Tf2)
-    phi_Tf1_Tcmbp = qfunc_incfilter(Tf1, Tcmb_prime)
+    phi_Tcmb_Tf2 = qfunc_incfilter(
+        Tcmb, Tf2)
+    phi_Tf1_Tcmb = qfunc_incfilter(
+        Tf1, Tcmb)
+    phi_Tcmbp_Tf2 = qfunc_incfilter(
+        Tcmb_prime, Tf2)
+    phi_Tf1_Tcmbp = qfunc_incfilter(
+        Tf1, Tcmb_prime)
     kappa = lensing.phi_to_kappa(
         phi_Tcmb_Tf2[0]+phi_Tf1_Tcmb[0])
     kappap = lensing.phi_to_kappa(
@@ -1102,54 +1530,31 @@ def get_TT_secondary(qfunc_incfilter, Tf1,
     S = curvedsky.alm2cl(kappa)-curvedsky.alm2cl(kappap)
     return S
 
-def get_TT_secondary(qfunc_incfilter, Tf1,
-                     Tcmb, Tcmb_prime, Tf2=None):
-    #Secondary is 
-    #<(Q[Tcmb, Tf_2]+Q[Tf_1, Tcmb])(Q[Tcmb, Tf_2]+Q[Tf_1, Tcmb])>
-    #to remove noise bias we need to subtract
-    #(Q[Tcmb_prime, Tf_2]+Q[Tf_1, Tcmb_prime]) from both
-    #sides of the correlator, where Tcmb_prime is a cmb
-    #map with the same unlensed CMB as T_cmb, but lensed
-    #by an independent kappa
-    if Tf2 is None:
-        Tf2 = Tf1
-    phi_Tcmb_Tf2 = qfunc_incfilter(Tcmb, Tf2)
-    phi_Tf1_Tcmb = qfunc_incfilter(Tf1, Tcmb)
-    phi_Tcmbp_Tf2 = qfunc_incfilter(Tcmb_prime, Tf2)
-    phi_Tf1_Tcmbp = qfunc_incfilter(Tf1, Tcmb_prime)
-    kappa = lensing.phi_to_kappa(
-        phi_Tcmb_Tf2[0]+phi_Tf1_Tcmb[0])
-    kappap = lensing.phi_to_kappa(
-        phi_Tcmbp_Tf2[0]+phi_Tf1_Tcmbp[0])
-    S = curvedsky.alm2cl(kappa)-curvedsky.alm2cl(kappap)
-    return S
-
-def get_all_secondary_terms(qfunc_tt_incfilter,
-                      qfunc_te_incfilter,
-                      qfunc_tb_incfilter,
-                      Tf1_alm, cmb_alm, cmb_prime_alm,
-                      Tf2_alm=None):
+def get_all_secondary_terms(
+    qfunc_tt, qfunc_te, qfunc_tb,
+    Tf1_filtered, cmb_filtered, 
+    cmb_prime_filtered, Tf2_filtered=None):
     #Get all secondary terms
     #i.e. TTTT, TTTE, TETE, TTTB, TBTB
     #if Tf2_alm != Tf1_alm, there would be more
     #potentially. But let's assume for now
     #that T1 is used for the T-pol estimators
     equal_Tf = False
-    if Tf2_alm is None:
+    if Tf2_filtered is None:
         equal_Tf=True
-        Tf2_alm=Tf1_alm
+        Tf2_filtered=Tf1_filtered
         
     #make sure cmb alms are the right format
-    for x in [cmb_alm, cmb_prime_alm]:
+    for x in [cmb_filtered, cmb_prime_filtered]:
         assert isinstance(x, tuple)
         assert len(x)==3
 
     #First do TTTT
     Tcmb, Tcmb_prime = cmb_alm[0]
-    phi_Tcmb_Tf2 = qfunc_TT_incfilter(Tcmb, Tf2)
-    phi_Tf1_Tcmb = qfunc_TT_incfilter(Tf1, Tcmb)
-    phi_Tcmbp_Tf2 = qfunc_TT_incfilter(Tcmb_prime, Tf2)
-    phi_Tf1_Tcmbp = qfunc_TT_incfilter(Tf1, Tcmb_prime)
+    phi_Tcmb_Tf2 = qfunc_TT(Tcmb, Tf1_filtered)
+    phi_Tf1_Tcmb = qfunc_TT(Tf1_filtered, Tcmb)
+    phi_Tcmbp_Tf2 = qfunc_TT(Tcmb_prime, Tf2_filtered)
+    phi_Tf1_Tcmbp = qfunc_TT(Tf2_filtered, Tcmb_prime)
 
     kappa_TT = lensing.phi_to_kappa(
         phi_Tcmb_Tf2[0]+phi_Tf1_Tcmb[0])
@@ -1159,19 +1564,19 @@ def get_all_secondary_terms(qfunc_tt_incfilter,
     S_TTTT = curvedsky.alm2cl(kappa_TT)-curvedsky.alm2cl(kappa_TTp)
 
     #Now pol
-    E, E_prime, B, B_prime = (cmb_alm[1], cmb_prime_alm[1],
-                              cmb_alm[2], cmb_prime_alm[2])
+    E, E_prime, B, B_prime = (cmb_filtered[1], cmb_prime_filtered[1],
+                              cmb_filtered[2], cmb_prime_filtered[2])
     kappa_Tf1_Ecmb = lensing.phi_to_kappa(
         qfunc_te_incfilter(Tf1, E)[0]
         )
     kappa_Tf1_Ecmbp = lensing.phi_to_kappa(
-        qfunc_te_incfilter(Tf1, E_prime)[0]
+        qfunc_te(Tf1_filtered, E_prime)[0]
         )
     kappa_Tf1_Bcmb = lensing.phi_to_kappa(
-        qfunc_tb_incfilter(Tf1, B)[0]
+        qfunc_tb(Tf1_filtered, B)[0]
         )
     kappa_Tf1_Bcmbp = lensing.phi_to_kappa(
-        qfunc_tb_incfilter(Tf1, B_prime)[0]
+        qfunc_tb(Tf1_filtered, B_prime)[0]
         )
     S_TTTE = (
         curvedsky.alm2cl(kappa_TT, kappa_Tf1_Ecmb)
@@ -1197,6 +1602,7 @@ def get_all_secondary_terms(qfunc_tt_incfilter,
          "TBTB" : S_TBTB}
     return S
         
+"""
 def get_TT_secondary_T0T1(qfunc_incfilter, Tf1,
                      T0_cmb, T1_cmb, Tf2=None):
     #For non symmetric estimators Q[T_1,T_2], we have
@@ -1221,7 +1627,9 @@ def get_TT_secondary_T0T1(qfunc_incfilter, Tf1,
     (Tf1_Tcmb0+Tcmb0_Tf2), (Tf1_Tcmb1+Tcmb1_Tf2)
     )
     return S
+"""
 
+"""
 def plot_secondary_terms():
     outdir="sym_estimator_test_output"
     if not os.path.isdir(outdir):
@@ -1245,13 +1653,14 @@ def plot_secondary_terms():
 
     recon_setup_XX = setup_recon(px, lmin, lmax, mlmax,
                                  tcls_X)
-    qfunc_XX = recon_setup_XX["qfunc_tt_incfilter"]
+    qfunc_XX = recon_setup_XX["qfunc_tt"]
     #Also want to test foreground trispectrum
     #Let's assume map Y has 1/10th of the foreground
     #contamination
     fg_alm_X = futils.change_alm_lmax(
         hp.read_alm("fg_nonoise_alms_0093.fits"),
         mlmax)
+    fg_X_filtered = filter_T(fg_alm_X, tcls_X['TT'], lmin, lmax)
     cl_fg_X = np.loadtxt("cl_tsz_websky_0093.txt")[:mlmax+1]
 
     #also get secondary the other way
@@ -1313,7 +1722,8 @@ def plot_secondary_terms():
     ax.set_title("websky tsz qe secondary terms")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(opj(outdir, "secondary_terms.png"), dpi=200)  
+    fig.savefig(opj(outdir, "secondary_terms.png"), dpi=200) 
+"""
 
 def get_websky_lensed_cmb(cmb_seed):
     f = opj(WEBSKY_DIR, "lensed_cmb", "lensed_cmb_alm_websky_cmb%d_lmax6000.fits"%cmb_seed)
@@ -1356,13 +1766,15 @@ def test_secondary(use_mpi=False, nsim=10, from_pkl=False):
 
         recon_setup = setup_recon(px, lmin, lmax, mlmax,
                                      tcls)
-        qfunc = recon_setup["qfunc_tt_incfilter"]
+        qfunc = recon_setup["qfunc_tt"]
+        qfunc_incfilter = recon_setup["qfunc_tt_incfilter"]
         #Also want to test foreground trispectrum
         #Let's assume map Y has 1/10th of the foreground
         #contamination
         fg_alm = futils.change_alm_lmax(
             hp.read_alm("fg_nonoise_alms_0093.fits"),
             mlmax)
+        fg_filtered = recon_setup['filter_alms_X'](fg_alm, tcls['TT'], lmin, lmax)
         cl_fg = np.loadtxt("cl_tsz_websky_0093.txt")[:mlmax+1]
         cl_dict = {"S_raw" : [],
                    "S_gaussian" : [],
@@ -1381,6 +1793,8 @@ def test_secondary(use_mpi=False, nsim=10, from_pkl=False):
             cmb_alm = get_websky_lensed_cmb(1999-isim)
             #cmb_alm = futils.get_cmb_alm(isim,0)[0]
             cmb_alm = futils.change_alm_lmax(cmb_alm, mlmax)
+            cmb_alm_filtered = recon_setup['filter_alms_X'](cmb_alm, tcls['TT'],
+                                        lmin, lmax)
 
             print("generating noise")
             noise_alm = curvedsky.rand_alm(Nl_tt, seed=isim*nsim)
@@ -1388,9 +1802,13 @@ def test_secondary(use_mpi=False, nsim=10, from_pkl=False):
             print("Gaussian cmb alm")
             cmb_gaussian_alm = curvedsky.rand_alm(tcls_nonoise['TT'],
                                           seed=isim*nsim+2)
+            cmb_gaussian_alm_filtered = recon_setup['filter_alms_X'](cmb_gaussian_alm, tcls['TT'],
+                                             lmin, lmax)
 
             cmb_and_noise_alm = cmb_alm+noise_alm
             gaussian_alm = cmb_gaussian_alm+noise_alm
+            gaussian_alm_filtered = recon_setup['filter_alms_X'](gaussian_alm, tcls['TT'],
+                                             lmin, lmax)
             #gaussian_fg_alm_X = curvedsky.rand_alm(cl_fg_X, seed=isim*nsim)
 
             #Get the secondary.
@@ -1398,8 +1816,8 @@ def test_secondary(use_mpi=False, nsim=10, from_pkl=False):
             #   =<Q[(Tcmb+Tf_1), (Tcmb, Tf_2)]Q[(Tcmb+Tf_1), (Tcmb, Tf_2)]>
             #this is
             #<(Q[Tcmb, Tf_2]+Q[Tf_1, Tcmb])(Q[Tcmb, Tf_2]+Q[Tf_1, Tcmb])>
-            phi_cmb_f2 = qfunc(cmb_alm, fg_alm)
-            phi_f1_cmb = qfunc(fg_alm,  cmb_alm)
+            phi_cmb_f2 = qfunc(cmb_alm_filtered, fg_filtered)
+            phi_f1_cmb = qfunc(fg_filtered,  cmb_alm_filtered)
 
             kappa_cmb_f2 = lensing.phi_to_kappa(
                 phi_cmb_f2[0])
@@ -1424,11 +1842,9 @@ def test_secondary(use_mpi=False, nsim=10, from_pkl=False):
                     kappa_cmb_f2
                     )))
 
-            
-            
             #we need the same for Gaussian sims
-            phi_cmb_f2_gaussian = qfunc(cmb_gaussian_alm, fg_alm)
-            phi_f1_cmb_gaussian = qfunc(fg_alm,  cmb_gaussian_alm)
+            phi_cmb_f2_gaussian = qfunc(cmb_gaussian_alm_filtered, fg_filtered)
+            phi_f1_cmb_gaussian = qfunc(fg_filtered,  cmb_gaussian_alm_filtered)
             kappa_cmb_f2_gaussian = lensing.phi_to_kappa(
                 phi_cmb_f2_gaussian[0])
             kappa_f1_cmb_gaussian = lensing.phi_to_kappa(
@@ -1457,20 +1873,11 @@ def test_secondary(use_mpi=False, nsim=10, from_pkl=False):
         if rank==0:
             #also get secondary the other way
             websky_dir="/global/project/projectdirs/act/data/maccrann/websky"
-            """
-            cmb0_alms = hp.fitsfunc.read_alm(
-                opj(websky_dir, 'unlensed_alm.fits'))
-            cmb1_alms = hp.fitsfunc.read_alm(
-                opj(websky_dir, 'T1alm_websky_lmax6000_nside4096.fits'))
-            T0_alms = futils.change_alm_lmax(cmb0_alms, mlmax)
-            T1_alms = futils.change_alm_lmax(cmb1_alms, mlmax)
-
-            S = get_TT_secondary_T0T1(qfunc, fg_alm,
-                                    T0_alms, T1_alms, Tf2=None)
-            """
-            T_alm = get_websky_lensed_cmb(1999)
-            T_p_alm = futils.get_cmb_alm(1999,0)[0]
-            S = get_TT_secondary(qfunc, fg_alms, T_alm, T_p_alm)
+            T = get_websky_lensed_cmb(1999)
+            #T_filtered = recon_setup['filter_alms_X'](T, tcls['TT'], lmin, lmax)
+            T_p = futils.get_cmb_alm(1999,0)[0]
+            #T_p_filtered = recon_setup['filter_alms_X'](T_p, tcls['TT'], lmin, lmax)
+            S = get_TT_secondary(qfunc_incfilter, fg_alm, T, T_p)
             
             #collect and plot
             n_collected=1
