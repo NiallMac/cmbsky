@@ -14,9 +14,9 @@ from astropy.cosmology import FlatLambdaCDM, z_at_value
 import astropy.units as units
 
 CONVERSION_FACTORS = {"CIB" : 
-                      {"0093" : 4.6831e3, "0100" : 4.1877e3, "0145" : 2.6320e3, "0353" : 3.3710e3, "0545" : 1.7508e4},
+                      {"0093" : 4.6831e3, "0100" : 4.1877e3, "0145" : 2.6320e3, "0217": 2.06767, "0353" : 3.3710e3, "0545" : 1.7508e4},
                       "Y" : 
-                      {"0093" : -4.2840e6, "0100": -4.1103e6, "0145" : -2.8355e6, "0353" : 6.1071e6, "0545" : 1.5257e7},
+                      {"0093" : -4.2840e6, "0100": -4.1103e6, "0145" : -2.8355e6, "0217" : -2.1188e4, "0353" : 6.1071e6, "0545" : 1.5257e7},
 }
 
 class ClBinner(object):
@@ -94,7 +94,9 @@ class CMBSky(object):
         if snr_min is not None:
             use = nemo_data['SNR']>=snr_min
             nemo_data = nemo_data[use]
-        print("masking %d nemo sources"%len(nemo_data))
+            print("masking %d snr>%.2f nemo sources from catalog %s"%(len(nemo_data), snr_min, nemo_file))
+        else:
+            print("masking %d nemo sources from catalog %s"%(len(nemo_data), nemo_file))
         
         ra_deg, dec_deg = nemo_data['RADeg'], nemo_data['decDeg']
         dec,ra = np.radians(dec_deg),np.radians(ra_deg)
@@ -140,7 +142,7 @@ class CMBSky(object):
                     cib_flux_cut=None, flux_cut_freq=None,
                     radiops_flux_cut=None, nemo_mask_fgs=False,
                     nemo_catalog=None, nemo_snr_min=None,
-                    nemo_mask_radius=10.,
+                    nemo_mask_radius=None,
                  ):
         """
         Somewhat confusing uberfunction for getting 
@@ -213,10 +215,20 @@ class CMBSky(object):
                 fg_mask *= ps_flux_mask
                                          
         if nemo_mask_fgs:
-            nemo_mask = self.get_nemo_source_mask(
-                nemo_catalog, nemo_mask_radius,
-                snr_min=nemo_snr_min)
-            fg_mask *= nemo_mask
+            if not isinstance(nemo_catalog, list):
+                nemo_catalog = [nemo_catalog]
+                assert not isinstance(nemo_snr_min, list)
+                assert not isinstance(nemo_mask_radius, list)
+                nemo_snr_min = [nemo_snr_min]
+                nemo_mask_radius = [nemo_mask_radius]
+            else:
+                assert isinstance(nemo_snr_min, list)
+                assert isinstance(nemo_mask_radius, list)
+            for cat, snr, rad in zip(nemo_catalog, nemo_snr_min, nemo_mask_radius):
+                nemo_mask = self.get_nemo_source_mask(
+                    cat, rad,
+                    snr_min=snr)
+                fg_mask *= nemo_mask
             
         n = len(fg_mask)
         print("in total masks %d/%d pixels (=f_sky %.2e)"%(
@@ -888,7 +900,7 @@ class WebSky(CMBSky):
         """
         Returns flux density in MJy/sr
         """
-        filename = opj(self.data_dir,
+        filename = opj(self.data_dir, "radiops",
                        "catalog_%.1f.h5"%float(freq))
         f = h5py.File(filename, 'r')
         flux, theta, phi = f['flux'][:], f['theta'][:], f['phi'][:]

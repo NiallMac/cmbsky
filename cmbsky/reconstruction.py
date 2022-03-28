@@ -212,13 +212,13 @@ def setup_recon(px, lmin, lmax, mlmax,
                                R_prof_tt**2)
             )
                 
-            qfunc_ph = solenspipe.get_qfunc(
+            qfunc_tt_prh_X = solenspipe.get_qfunc(
                 px, ucls, mlmax, "TT",
                 Al1=norms_X['TT'], est2='PH', Al2=norm_prof,
                 R12=R_prof_tt, profile=profile)
 
             recon_stuff["profile"] = profile
-            recon_stuff["qfunc_tt_prh"] = qfunc_ph
+            recon_stuff["qfunc_tt_prh"] = qfunc_tt_prh_X
             recon_stuff["qfunc_tt_prh_incfilter"] = lambda X,Y: qfunc_tt_prh_X(filter_alms_X(X),
                                                                     filter_alms_X(Y))
             recon_stuff["R_prof_tt"] = R_prof_tt
@@ -233,12 +233,12 @@ def setup_recon(px, lmin, lmax, mlmax,
                     Ctot,gtype='')
 
                 norm_src_fg = pytempura.get_norms(
-                    ['TT','src'], recon_stuff['ucls'], {'TT':Ctot},
-                    kappa_lmin, kappa_lmax,
+                    ['TT','src'], ucls, {'TT':Ctot},
+                    lmin, lmax,
                     k_ellmax=mlmax, profile=profile)['src']
                 R_src_fg = pytempura.get_cross(
-                    'SRC','TT', recon_stuff['ucls'], {'TT':Ctot},
-                    kappa_lmin, kappa_lmax,
+                    'SRC','TT', ucls, {'TT':Ctot},
+                    lmin, lmax,
                     k_ellmax=mlmax, profile=profile)
 
                 #gradient and curl
@@ -286,9 +286,10 @@ def setup_recon(px, lmin, lmax, mlmax,
         """Setup symmetrized TT estimator"""
         assert (tcls_XY is not None)
         recon_stuff_sym = setup_sym_estimator(
-                px, lmin, lmax, mlmax,
-                tcls_X['TT'], tcls_Y['TT'],  tcls_XY['TT']
-                )
+            px, lmin, lmax, mlmax,
+            tcls_X['TT'], tcls_Y['TT'],  tcls_XY['TT'],
+            do_psh=do_psh
+        )
         assert set(recon_stuff_sym.keys()).isdisjoint(recon_stuff.keys())
         recon_stuff.update(recon_stuff_sym)
 
@@ -311,7 +312,6 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     output = {} #dictionary for  outputs
     
     #get cls for gradient filter                                                                                                                      
-                      
     ucls,_ = futils.get_theory_dicts(grad=True, lmax=mlmax)
 
     cltot_X, cltot_Y, cltot_XY = (
@@ -319,6 +319,10 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     )
     
     #Now get the norms
+    print("getting qe norms")
+    print("cltot_X.shape(),cltot_X:", cltot_X.shape, cltot_X)
+    print("cltot_Y.shape(),cltot_Y:", cltot_Y.shape, cltot_Y)
+    print("cltot_XY.shape(),cltot_XY:", cltot_XY.shape, cltot_XY)
     norm_args_YX = (mlmax, lmin, lmax, lmin,
         lmax, lmax, ucls['TT'][:lmax+1], cltot_X,
         cltot_Y)
@@ -338,6 +342,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         return filter_T(Y, cltot_Y, lmin, lmax)
     output["filter_Y"] = filter_Y
 
+    print("getting qe N0s")
     #Now get the N0s (need these for constructing
     #symmetrized estimator)
     #Note these are the noise on the *unnormalized*
@@ -374,7 +379,8 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     output["N0_XYXY_phi"] = N0_XYXY_phi
     output["N0_XYYX_phi"] = N0_XYYX_phi
     output["N0_YXYX_phi"] = N0_YXYX_phi
-    
+
+    print("getting qe fg_trispectrum functions")
     #Also will be useful to define here functions to get the
     #tripsectrum N0 for foregrounds. 
     def get_fg_trispectrum_N0_XYXY(clfg_X, clfg_Y, clfg_XY):
@@ -416,6 +422,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     
     #Ok, so we have norms and N0s
     #Now the qfuncs
+    print("getting XY and YX qfuncs for qe")
     def get_XY_filtered(X_filtered, Y_filtered, 
                         X_nofilter=None, Y_nofilter=None):
         if X_filtered is None:
@@ -440,13 +447,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     output["qfunc_XY"] = qfunc_XY
     output["qfunc_XY_incfilter"] = lambda X,Y: qfunc_XY(filter_X(X), filter_Y(Y))
     
-    def qfunc_YX(X_filtered, Y_filtered, 
-                 X_nofilter=None, Y_nofilter=None):
-
-        X_filtered, Y_filtered = get_XY_filtered(
-            X_filtered, Y_filtered, 
-            X_nofilter=X_nofilter, Y_nofilter=Y_nofilter)
-                
+    def qfunc_YX(X_filtered, Y_filtered):
         phi_nonorm = qe.qe_all(px,ucls,mlmax,
                                 fTalm=Y_filtered,fEalm=None,fBalm=None,
                                 estimators=['TT'],
@@ -457,12 +458,12 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     
     output["qfunc_YX"] = qfunc_YX
     output["qfunc_YX_incfilter"] = lambda X,Y: qfunc_YX(filter_X(X), filter_Y(Y))
-                                                        
-
+    
     if do_psh:
         #We'll need the following normalization and
         #response functions 
         #first the src norms
+        print("getting psh norms and responses")
         norm_src_YX = norm_general.qtt_asym(
             "src", *norm_args_YX)[0] #tempura returns dummy 
                                      #curl component for src
@@ -532,6 +533,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             
         #Get response matrices
         #and N0s
+        print("getting psh N0s")
         R_matrix_XY_inv = get_inverse_response_matrix(
             norm_tt_XY[0], norm_src_XY,
             R_phi_src_XY, R_src_phi_XY)
@@ -714,15 +716,16 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         #tripsectrum N0 for foregrounds. We need to do the same 
         #N0 calculations as above basically, but swapping cltot_AB
         #for clfg_AB. 
-        def get_fg_trispectrum_N0_psh_XYXY(clfg_X, clfg_Y, clfg_XY):
-            
+        def get_fg_trispectrum_N0_XYXY_psh(clfg_X, clfg_Y, clfg_XY):
+            clfg_X, clfg_Y, clfg_XY = (clfg_X[:lmax+1],
+                                       clfg_Y[:lmax+1],
+                                       clfg_XY[:lmax+1])
             N0_tri_XYXY_phi = get_fg_trispectrum_N0_XYXY(
                 clfg_X, clfg_Y, clfg_XY)
-            
             N0_tri_XYXY_src_nonorm = noise_spec.qtt_asym(
                 "src", mlmax,lmin,lmax,
                 wL_X, wGsrc_Y, wL_X, wGsrc_Y,
-                clfg_X, clfg_Y, clfg_XY, clfg_XY)
+                clfg_X, clfg_Y, clfg_XY, clfg_XY)[0]
             N0_tri_XYXY_src = (
                 N0_tri_XYXY_src_nonorm
                 *norm_src_XY*norm_src_XY)
@@ -738,7 +741,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 wL_X, wGsrc_Y, wL_X, wGphi_Y,
                 clfg_X, clfg_Y, clfg_XY, clfg_XY)
             N0_tri_XYXY_src_phi = (
-                N0_XYXY_phi_src_nonorm
+                N0_tri_XYXY_src_phi_nonorm
                 *norm_tt_XY[0]*norm_src_XY)
             #now put together to get N0 psh matrix
             N0_tri_matrix_XYXY_psh = get_N0_matrix_psh(
@@ -748,7 +751,10 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
 
             return N0_tri_matrix_XYXY_psh[:,0,0]
 
-        def get_fg_trispectrum_N0_psh_XYYX(clfg_X, clfg_Y, clfg_XY):
+        def get_fg_trispectrum_N0_XYYX_psh(clfg_X, clfg_Y, clfg_XY):
+            clfg_X, clfg_Y, clfg_XY = (clfg_X[:lmax+1],
+                                       clfg_Y[:lmax+1],
+                                       clfg_XY[:lmax+1])
             N0_tri_XYYX_phi = get_fg_trispectrum_N0_XYYX(
                 clfg_X, clfg_Y, clfg_XY)
             N0_tri_XYYX_src_nonorm = noise_spec.qtt_asym(
@@ -779,23 +785,27 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 R_matrix_XY_inv, R_matrix_YX_inv)
             return N0_tri_matrix_XYYX_psh[:,0,0]
 
-        def get_fg_trispectrum_N0_psh_YXYX(clfg_X, clfg_Y, clfg_XY):
+        def get_fg_trispectrum_N0_YXYX_psh(clfg_X, clfg_Y, clfg_XY):
+            clfg_X, clfg_Y, clfg_XY = (clfg_X[:lmax+1],
+                                       clfg_Y[:lmax+1],
+                                       clfg_XY[:lmax+1])
+
             N0_tri_YXYX_phi = get_fg_trispectrum_N0_YXYX(
                 clfg_X, clfg_Y, clfg_XY)
             N0_tri_YXYX_src_nonorm = noise_spec.qtt_asym(
             'src', mlmax,lmin,lmax,
              wL_Y, wGsrc_X, wL_Y, wGsrc_X,
-             clfg_Y,clfg_X, clfg_XY,clfg_XY)
+             clfg_Y,clfg_X, clfg_XY,clfg_XY)[0]
             N0_tri_YXYX_src = (
-                N0_tri_YXYX_src_nonorm*norm_src**2)
+                N0_tri_YXYX_src_nonorm*norm_src_YX**2)
             N0_tri_YXYX_phi_src_nonorm = noise_spec.xtt_asym(
                 "lenssrc", mlmax,lmin,lmax,
                  wL_Y, wGphi_X, wL_Y, wGsrc_X,
-                 clfg_Y,clfg_X, clfg_XY,clfg_XY)
+                 clfg_Y,clfg_X, clfg_XY, clfg_XY)
             N0_tri_YXYX_phi_src = (
                 N0_tri_YXYX_phi_src_nonorm
                 *norm_tt_YX[0]*norm_src_YX)
-            N0_tri_YXYX_phi_src_nonorm = noise_spec.xtt_asym(
+            N0_tri_YXYX_src_phi_nonorm = noise_spec.xtt_asym(
                 "srclens", mlmax,lmin,lmax,
                  wL_Y, wGsrc_X, wL_Y, wGphi_X,
                  clfg_Y,clfg_X, clfg_XY,clfg_XY)
@@ -807,11 +817,12 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 N0_tri_YXYX_phi[0], N0_tri_YXYX_phi_src,
                 N0_tri_YXYX_src_phi, N0_tri_YXYX_src,
                 R_matrix_YX_inv, R_matrix_YX_inv)
+
             return N0_tri_matrix_YXYX_psh[:,0,0]
 
-        output["get_fg_trispectrum_N0_XYXY"] = get_fg_trispectrum_N0_XYXY
-        output["get_fg_trispectrum_N0_XYYX"] = get_fg_trispectrum_N0_XYYX
-        output["get_fg_trispectrum_N0_YXYX"] = get_fg_trispectrum_N0_YXYX
+        output["get_fg_trispectrum_N0_XYXY_psh"] = get_fg_trispectrum_N0_XYXY_psh
+        output["get_fg_trispectrum_N0_XYYX_psh"] = get_fg_trispectrum_N0_XYYX_psh
+        output["get_fg_trispectrum_N0_YXYX_psh"] = get_fg_trispectrum_N0_YXYX_psh
         
     def get_sym_weights(N0_XYXY_phi, N0_XYYX_phi, N0_YXYX_phi):
         #Now get weights etc. for symmetric estimator
@@ -883,7 +894,17 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     output["qfunc_sym"] = get_qfunc_sym(
         (w_XY_g, w_XY_c), (w_YX_g, w_YX_c), qfunc_XY, qfunc_YX)
     def qfunc_sym_incfilter(X, Y, phi_XY=None, phi_YX=None):
-        return output["qfunc_sym"](filter_X(X), filter_Y(Y),
+        if X is not None:
+            X_filtered, Y_filtered = filter_X(X), filter_Y(Y)
+        else:
+            X_filtered, Y_filtered = None, None
+            try:
+                assert phi_XY is not None
+                assert phi_YX is not None
+            except AssertionError as e:
+                print("you must provde phi_XY and phi_YX is X is None")
+                raise(e)
+        return output["qfunc_sym"](X_filtered, Y_filtered,
                                    phi_XY=phi_XY, phi_YX=phi_YX)
     output["qfunc_sym_incfilter"] = qfunc_sym_incfilter
                                                                 
@@ -924,12 +945,23 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         output["N0_sym_phi_psh"] = (1./w_sum_psh, None)
         output["qfunc_sym_psh"] = get_qfunc_sym(
             (w_XY_psh,None), (w_YX_psh,None), qfunc_XY_psh, qfunc_YX_psh)
+        
         def qfunc_sym_psh_incfilter(X, Y, phi_XY=None, phi_YX=None):
-            return output["qfunc_psh_sym"](filter_X(X), filter_Y(Y),
+            if X is not None:
+                X_filtered, Y_filtered = filter_X(X), filter_Y(Y)
+            else:
+                X_filtered, Y_filtered = None, None
+                try:
+                    assert phi_XY is not None
+                    assert phi_YX is not None
+                except AssertionError as e:
+                    print("you must provde phi_XY and phi_YX is X is None")
+                    raise(e)
+            return output["qfunc_sym_psh"](X_filtered, Y_filtered,
                                        phi_XY=phi_XY, phi_YX=phi_YX)
         output["qfunc_sym_psh_incfilter"] = qfunc_sym_psh_incfilter
         
-        def get_fg_trispectrum_N0_psh_sym(clfg_X, clfg_Y, clfg_XY):
+        def get_fg_trispectrum_N0_sym_psh(clfg_X, clfg_Y, clfg_XY):
             """
             The N0 for the foreground trispectrum when using
             the symmetrized estimator
@@ -939,11 +971,11 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                       = w_XY^2 * N0^XY + w_YX^2 * N0^YX
                         + 2*w_XY*w_YX*N0^XYYX
             """
-            N0_fg_XYXY_psh = get_fg_trispectrum_N0_psh_XYXY(
+            N0_fg_XYXY_psh = get_fg_trispectrum_N0_XYXY_psh(
                 clfg_X, clfg_Y, clfg_XY)
-            N0_fg_XYYX_psh = get_fg_trispectrum_N0_psh_XYYX(
+            N0_fg_XYYX_psh = get_fg_trispectrum_N0_XYYX_psh(
                 clfg_X, clfg_Y, clfg_XY)
-            N0_fg_YXYX_psh = get_fg_trispectrum_N0_psh_YXYX(
+            N0_fg_YXYX_psh = get_fg_trispectrum_N0_YXYX_psh(
                 clfg_X, clfg_Y, clfg_XY)
             N0_fg_sym_psh = (
                 w_XY_psh**2 * N0_fg_XYXY_psh
@@ -952,7 +984,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             )
             return N0_fg_sym_psh
         
-        output["get_fg_trispectrum_N0_sym"] = get_fg_trispectrum_N0_sym
+        output["get_fg_trispectrum_N0_sym_psh"] = get_fg_trispectrum_N0_sym_psh
     
     return output
 

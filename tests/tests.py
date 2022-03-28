@@ -22,9 +22,9 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
     if not from_pkl:
     
         px=qe.pixelization(nside=4096)
-        mlmax=4000
+        mlmax=2000
         lmin=100
-        lmax=3000
+        lmax=1500
         binner=ClBinner(lmin=lmin, lmax=lmax, nbin=20)
 
         noise_sigma_X = 10.
@@ -57,6 +57,11 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
         a = r * np.sqrt(Nl_tt_X*Nl_tt_Y)/Nl_tt_X
         Nl_tt_Z = Nl_tt_Y - a**2 * Nl_tt_X
 
+        #Read in foreground cl
+        cl_fg_X = np.loadtxt(CL_TSZ_FILE)[:mlmax+1]
+        cl_fg_Y = 0.1**2 * cl_fg_X
+        cl_fg_XY = 0.1*cl_fg_X
+
         """
         # Test the noise is working as expected
         noise_alm_X = curvedsky.rand_alm(Nl_tt_X)
@@ -75,11 +80,17 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
         ax.set_ylim([0.8,1.2])
         """
         # Setup the symmetrized estimator
+        print("setting up estimators")
         sym_setup = setup_sym_estimator(px, lmin, lmax, mlmax,
-                                cltot_X, cltot_Y, cltot_XY)
+                                        cltot_X, cltot_Y, cltot_XY,
+                                        do_psh=True)
+        
         qfunc_XY = sym_setup["qfunc_XY_incfilter"]
         qfunc_YX = sym_setup["qfunc_YX_incfilter"]
         qfunc_sym = sym_setup["qfunc_sym_incfilter"]
+        qfunc_XY_psh = sym_setup["qfunc_XY_psh_incfilter"]
+        qfunc_YX_psh = sym_setup["qfunc_YX_psh_incfilter"]
+        qfunc_sym_psh = sym_setup["qfunc_sym_psh_incfilter"]
         
         #Loop through sims 
         #- getting cmb alms
@@ -93,8 +104,13 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
                    "kxi_YX" : [],
                    "kk_sym" : [],
                    "kxi_sym" : [],
-                   "ii" : [] #input cl_kappa,
+                   "ii" : [], #input cl_kappa,
+                   "kk_gaussian_XY" : [],
+                   "kk_gaussian_YX" : [],
+                   "kk_gaussian_sym" : [],
         }
+        for key in list(cl_dict.keys()):
+            cl_dict[key+"_psh"] = []
 
         for isim in range(nsim):
             if isim%size != rank:
@@ -106,20 +122,29 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
             kappa_alm = futils.get_kappa_alm(isim)
             kappa_alm = futils.change_alm_lmax(kappa_alm, mlmax)
             ells = np.arange(mlmax+1)
+            cl_dict["ells"] = ells
             cl_kk_binned = binner(curvedsky.alm2cl(kappa_alm))
             cl_dict['ii'].append(cl_kk_binned)
 
             print("generating noise")
-            noise_alm_X = curvedsky.rand_alm(Nl_tt_X, seed=isim*nsim)
-            noise_alm_Z = curvedsky.rand_alm(Nl_tt_Z, seed=isim*nsim+1)
+            noise_alm_X = curvedsky.rand_alm(Nl_tt_X, seed=isim*(10*nsim))
+            noise_alm_Z = curvedsky.rand_alm(Nl_tt_Z, seed=isim*(10*nsim)+1)
             noise_alm_Y = curvedsky.almxfl(noise_alm_X,a) + noise_alm_Z
 
-            sky_alm_X = cmb_alm+noise_alm_X
-            sky_alm_Y = cmb_alm+noise_alm_Y
+            X = cmb_alm+noise_alm_X
+            Y = cmb_alm+noise_alm_Y
 
+            cmb_gaussian = curvedsky.rand_alm(tcls_nonoise['TT'],
+                                          seed=isim*(10*nsim)+2)
+            X_gaussian = cmb_alm+noise_alm_X
+            Y_gaussian = cmb_alm+noise_alm_Y
+
+            X_fg_gaussian = curvedsky.rand_alm(cl_fg_X, seed=isim*(10*nsim)+3)
+            Y_fg_gaussian = 0.1*X_fg_gaussian
+        
             print("running phi estimators")
-            phi_XY = qfunc_XY(sky_alm_X, sky_alm_Y)
-            phi_YX = qfunc_YX(sky_alm_X, sky_alm_Y)
+            phi_XY = qfunc_XY(X, Y)
+            phi_YX = qfunc_YX(X, Y)
             phi_sym = qfunc_sym(
                 None, None, phi_XY=phi_XY, phi_YX=phi_YX
             )
@@ -127,6 +152,39 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
             kappa_XY = lensing.phi_to_kappa(phi_XY[0])
             kappa_YX = lensing.phi_to_kappa(phi_YX[0])
             kappa_sym = lensing.phi_to_kappa(phi_sym[0])
+
+            print("running gaussian case")
+            phi_XY_gaussian = qfunc_XY(X_gaussian, Y_gaussian)
+            phi_YX_gaussian = qfunc_YX(X_gaussian, Y_gaussian)
+            phi_sym_gaussian = qfunc_sym(
+                None, None, phi_XY=phi_XY_gaussian, phi_YX=phi_YX_gaussian
+            )
+
+            kappa_XY_gaussian = lensing.phi_to_kappa(phi_XY_gaussian[0])
+            kappa_YX_gaussian = lensing.phi_to_kappa(phi_YX_gaussian[0])
+            kappa_sym_gaussian = lensing.phi_to_kappa(phi_sym_gaussian[0])
+
+            print("psh case")
+            phi_XY_psh = qfunc_XY_psh(X, Y)
+            phi_YX_psh = qfunc_YX_psh(X, Y)
+            phi_sym_psh = qfunc_sym_psh(
+                None, None, phi_XY=phi_XY_psh, phi_YX=phi_YX_psh
+            )
+
+            kappa_XY_psh = lensing.phi_to_kappa(phi_XY_psh[0])
+            kappa_YX_psh = lensing.phi_to_kappa(phi_YX_psh[0])
+            kappa_sym_psh = lensing.phi_to_kappa(phi_sym_psh[0])
+
+            print("running psh gaussian case")
+            phi_XY_psh_gaussian = qfunc_XY_psh(X_gaussian, Y_gaussian)
+            phi_YX_psh_gaussian = qfunc_YX_psh(X_gaussian, Y_gaussian)
+            phi_sym_psh_gaussian = qfunc_sym_psh(
+                None, None, phi_XY=phi_XY_psh_gaussian, phi_YX=phi_YX_psh_gaussian
+            )
+
+            kappa_XY_psh_gaussian = lensing.phi_to_kappa(phi_XY_psh_gaussian[0])
+            kappa_YX_psh_gaussian = lensing.phi_to_kappa(phi_YX_psh_gaussian[0])
+            kappa_sym_psh_gaussian = lensing.phi_to_kappa(phi_sym_psh_gaussian[0])
 
             print("getting Cls")
             #cross with input
@@ -138,6 +196,35 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
             ))
             cl_dict["kxi_sym"].append(binner(
                 curvedsky.alm2cl(kappa_sym, kappa_alm)
+            ))
+            cl_dict["kxi_XY_psh"].append(binner(
+                curvedsky.alm2cl(kappa_XY_psh, kappa_alm)
+            ))
+            cl_dict["kxi_YX_psh"].append(binner(
+                curvedsky.alm2cl(kappa_YX_psh, kappa_alm)
+            ))
+            cl_dict["kxi_sym_psh"].append(binner(
+                curvedsky.alm2cl(kappa_sym_psh, kappa_alm)
+            ))
+
+            #auto of gaussians
+            cl_dict["kk_gaussian_XY"].append(binner(
+                curvedsky.alm2cl(kappa_XY_gaussian)
+            ))
+            cl_dict["kk_gaussian_YX"].append(binner(
+                curvedsky.alm2cl(kappa_YX_gaussian)
+            ))              
+            cl_dict["kk_gaussian_sym"].append(binner(
+                curvedsky.alm2cl(kappa_sym_gaussian)
+            ))
+            cl_dict["kk_gaussian_XY_psh"].append(binner(
+                curvedsky.alm2cl(kappa_XY_psh_gaussian)
+            ))
+            cl_dict["kk_gaussian_YX_psh"].append(binner(
+                curvedsky.alm2cl(kappa_YX_psh_gaussian)
+            ))              
+            cl_dict["kk_gaussian_sym_psh"].append(binner(
+                curvedsky.alm2cl(kappa_sym_psh_gaussian)
             ))
 
             #auto
@@ -171,13 +258,19 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
             cl_dict["lmax"] = binner.lmax
             cl_dict["nbin"] = binner.nbin
             #and N0s
-            L = np.arange(lmax+1)
+            L = np.arange(mlmax+1)
             N0_XYXY = binner(sym_setup["N0_XYXY_phi"][0] * (L*(L+1)/2)**2)
             N0_YXYX = binner(sym_setup["N0_YXYX_phi"][0] * (L*(L+1)/2)**2)
-            N0_sym = binner((1./sym_setup["w_sum_g"]) * (L*(L+1)/2)**2)
+            N0_sym = binner(sym_setup["N0_sym_phi"][0] * (L*(L+1)/2)**2)
             cl_dict["N0_XYXY"] = N0_XYXY
             cl_dict["N0_YXYX"] = N0_YXYX
             cl_dict["N0_sym"] = N0_sym
+            N0_XYXY_psh = binner(sym_setup["N0_XYXY_phi_psh"][0] * (L*(L+1)/2)**2)
+            N0_YXYX_psh = binner(sym_setup["N0_YXYX_phi_psh"][0] * (L*(L+1)/2)**2)
+            N0_sym_psh = binner(sym_setup["N0_sym_phi_psh"][0] * (L*(L+1)/2)**2)
+            cl_dict["N0_XYXY_psh"] = N0_XYXY_psh
+            cl_dict["N0_YXYX_psh"] = N0_YXYX_psh
+            cl_dict["N0_sym_psh"] = N0_sym_psh
                 
             with open(opj(outdir,"cls.pkl"), 'wb') as f:
                 pickle.dump(cl_dict, f)
@@ -193,35 +286,86 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
     if rank==0:
         #get means and plot
         #first do x input
-        ell_mids = cl_dict["ell_mids"]
-        cl_iis = cl_dict["ii"]
-        nsim = cl_dict["ii"].shape[0]
-        print("nsim:",nsim)
-        cl_kxi_XY_fracdiff_mean = (cl_dict["kxi_XY"]/cl_iis-1).mean(axis=0)
-        cl_kxi_XY_err = (cl_dict["kxi_XY"]/cl_iis-1).std(axis=0)/np.sqrt(nsim-1)
+        binner = ClBinner(lmin=cl_dict["lmin"], lmax=cl_dict["lmax"],
+                          nbin=cl_dict["nbin"])
+        ell_mids = binner.bin_mids
+        def plot_kxi(cl_iis, cl_kxi_XYs, cl_kxi_YXs, cl_kxi_syms,
+                     filename):
+            cl_iis = cl_dict["ii"]
+            nsim = cl_dict["ii"].shape[0]
+            print("nsim:",nsim)
+            cl_kxi_XY_fracdiff_mean = (cl_kxi_XYs/cl_iis-1).mean(axis=0)
+            cl_kxi_XY_err = (cl_dict["kxi_XY"]/cl_iis-1).std(axis=0)/np.sqrt(nsim-1)
 
-        cl_kxi_YX_fracdiff_mean = (cl_dict["kxi_YX"]/cl_iis-1).mean(axis=0)
-        cl_kxi_YX_err = (cl_dict["kxi_YX"]/cl_iis-1).std(axis=0)/np.sqrt(nsim-1)
+            cl_kxi_YX_fracdiff_mean = (cl_kxi_YXs/cl_iis-1).mean(axis=0)
+            cl_kxi_YX_err = (cl_kxi_YXs/cl_iis-1).std(axis=0)/np.sqrt(nsim-1)
 
-        cl_kxi_sym_fracdiff_mean = (cl_dict["kxi_sym"]/cl_iis-1).mean(axis=0)
-        cl_kxi_sym_err = (cl_dict["kxi_sym"]/cl_iis-1).std(axis=0)/np.sqrt(nsim-1)
+            cl_kxi_sym_fracdiff_mean = (cl_kxi_syms/cl_iis-1).mean(axis=0)
+            cl_kxi_sym_err = (cl_kxi_syms/cl_iis-1).std(axis=0)/np.sqrt(nsim-1)
 
-        #do some plotting
-        fig,ax=plt.subplots(figsize=(5,4))
+            #do some plotting
+            fig,ax=plt.subplots(figsize=(5,4))
 
-        ax.errorbar(ell_mids, cl_kxi_XY_fracdiff_mean, yerr=cl_kxi_XY_err, label='XY')
-        ax.errorbar(ell_mids-10, cl_kxi_YX_fracdiff_mean, yerr=cl_kxi_YX_err, label='YX')
-        ax.errorbar(ell_mids+10, cl_kxi_sym_fracdiff_mean, yerr=cl_kxi_sym_err, label='sym')
+            ax.errorbar(ell_mids, cl_kxi_XY_fracdiff_mean, yerr=cl_kxi_XY_err, label='XY')
+            ax.errorbar(ell_mids-10, cl_kxi_YX_fracdiff_mean, yerr=cl_kxi_YX_err, label='YX')
+            ax.errorbar(ell_mids+10, cl_kxi_sym_fracdiff_mean, yerr=cl_kxi_sym_err, label='sym')
 
-        ax.legend()
-        ax.set_title("x input")
-        ax.set_xlabel(r"$L$")
-        ax.set_ylabel(r"$C_l^{\hat{\kappa},\kappa} / C_l^{\kappa, \kappa}-1$")
-        ax.set_ylim([-0.03,0.03])
-        fig.tight_layout()
-        fig.savefig(opj(outdir, "clkxinput_fracdiff.png"), dpi=200)
+            ax.legend()
+            ax.set_title("x input")
+            ax.set_xlabel(r"$L$")
+            ax.set_ylabel(r"$C_l^{\hat{\kappa},\kappa} / C_l^{\kappa, \kappa}-1$")
+            ax.set_ylim([-0.05,0.05])
+            fig.tight_layout()
+            #fig.savefig(opj(outdir, "clkxinput_fracdiff.png"), dpi=200)
+            fig.savefig(filename, dpi=200)
 
+        def plot_N0(N0s_theory, N0s_sim,
+                    labels, filename):
+
+            nsim = N0s_sim[0].shape[0]
+            print("nsim:",nsim)
+            #do some plotting
+            fig,ax=plt.subplots(figsize=(5,4))
+
+            for N0_theory, N0_sim, label in zip(N0s_theory, N0s_sim, labels):
+                m = N0_sim.mean(axis=0)
+                err = np.std(N0_sim, axis=0)/np.sqrt(nsim)
+                ax.errorbar(ell_mids, m/N0_theory-1, yerr=err/N0_theory, label=label)
+
+            ax.legend()
+            ax.set_title("x input")
+            ax.set_xlabel(r"$L$")
+            ax.set_ylabel(r"$N0_{sim} / N0_{data} - 1$")
+            #ax.set_ylim([-0.05,0.05])
+            fig.tight_layout()
+            #fig.savefig(opj(outdir, "clkxinput_fracdiff.png"), dpi=200)
+            fig.savefig(filename, dpi=200)
+
+            
+        plot_kxi(cl_dict["ii"], cl_dict["kxi_XY"],
+                 cl_dict["kxi_YX"], cl_dict["kxi_sym"],
+                 opj(outdir, "clkxinput_fracdiff.png"))
+            
+        #same for psh
+        plot_kxi(cl_dict["ii"], cl_dict["kxi_XY_psh"],
+                 cl_dict["kxi_YX_psh"], cl_dict["kxi_sym_psh"],
+                 opj(outdir, "clkxinput_psh_fracdiff.png"))
+
+        #Now N0s
+        L = cl_dict["ells"]
+        N0s_theory = [binner(recon_setup[key][0]*(L*(L+1)/2)**2)
+                      for key in ["N0_XYXY_phi", "N0_sym_phi"]]
+        N0s_sim = [cl_dict[key] for key in
+                   ["kk_gaussian_XY", "kk_gaussian_sym"]]
+        labels=["XYXY", "sym"]
+        filename = opj(outdir, "N0_fracdiff_qe.png")
+        plot_N0(N0s_theory, N0s_sim,
+                    labels, filename)
+        
         #Now auto
+        #Not that useful to plot auto because of N1 bias, so
+        #I'm going to comment out for now
+        """
         for i in range(nsim):
             cl_dict["kk_XY"][i] -= cl_dict['N0_XYXY']
             cl_dict["kk_YX"][i] -= cl_dict['N0_YXYX']
@@ -269,18 +413,7 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False):
         ax.set_ylabel(r"$C_l^{\hat{\kappa}\hat{\kappa}} / C_l^{\kappa, \kappa}-1$")
         fig.tight_layout()
         fig.savefig(opj(outdir, "clkk_auto_fracdiff.png"), dpi=200)
-
-        #Also the N0s
-        fig,ax=plt.subplots(figsize=(5,4))
-        ax.plot(ell_mids, cl_dict['N0_XYXY'], label='<Q[XY]Q[XY]>')
-        ax.plot(ell_mids, cl_dict['N0_YXYX'], label='<Q[YX]Q[YX]>')
-        ax.plot(ell_mids, cl_dict['N0_sym'], label='sym')
-        ax.set_yscale('log')
-        ax.set_xlabel(r"$L$")
-        ax.set_ylabel(r"$N^0$")
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(opj(outdir, "N0.png"), dpi=200)
+        """
 
 
 def test_N0(use_mpi=False, nsim=10, from_pkl=False):
@@ -1253,6 +1386,7 @@ if __name__=="__main__":
     parser.add_argument("-n", "--nsim", type=int, default=2)
     args = parser.parse_args()
 
+    test_signal(nsim=args.nsim, use_mpi=args.mpi, from_pkl=args.from_pkl)
     #test_N0(use_mpi=args.mpi, nsim=args.nsim, from_pkl=args.from_pkl)
     #test_secondary(use_mpi=args.mpi, nsim=args.nsim, from_pkl=args.from_pkl)
-    plot_secondary_terms()
+    #plot_secondary_terms()
