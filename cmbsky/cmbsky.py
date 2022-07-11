@@ -5,7 +5,7 @@ import numpy as np
 import healpy as hp
 from pixell import curvedsky
 from orphics import maps,io,cosmology,stats,pixcov
-from pixell import enmap,curvedsky,utils,enplot,lensing
+from pixell import enmap, curvedsky, utils, enplot, lensing, reproject
 from falafel import utils as futils
 from falafel.utils import change_alm_lmax
 import astropy.io.fits as afits
@@ -18,6 +18,32 @@ CONVERSION_FACTORS = {"CIB" :
                       "Y" : 
                       {"0093" : -4.2840e6, "0100": -4.1103e6, "0145" : -2.8355e6, "0217" : -2.1188e4, "0353" : 6.1071e6, "0545" : 1.5257e7},
 }
+
+h=6.62607004e-34
+c=2.99792458e8
+kb = 1.38064852e-23
+T_cmb=2.7255
+
+def y_to_deltaToverT(freq):
+    x = float(freq)/56.8
+    return 2.7255 * (x * (np.exp(x)+1)/(np.exp(x)-1) - 4)
+    
+def response_fnc_tsz(qid,lmax=None):
+    return y_to_deltaToverT(float(qid))/y_to_deltaToverT(145.)
+
+
+def cib_sed(freq, lmax=None, beta=1.2, T_cib=24.):
+    freq = float(freq)*1.e9
+    x = h*freq / kb / T_cmb
+    #print(x)
+    dBdT = 2*h * freq**3 * x * np.exp(x) / c**2 / T_cmb / (np.exp(x)-1)**2
+    #print(dBdT)
+    x_cib = h*freq / kb / T_cib
+    #print(x_cib)
+    return freq**(3+beta) / (np.exp(x_cib) - 1) / dBdT
+
+def response_fnc_cib(qid, lmax=None):
+    return cib_sed(qid)/cib_sed(145.)
 
 class ClBinner(object):
     def __init__(self, lmin=10, lmax=300, nbin=20):
@@ -87,7 +113,18 @@ class CMBSky(object):
         
     def get_nemo_source_mask(self, nemo_file,
                              mask_radius,
-                             snr_min=None):
+                             snr_min=None,
+                             rot=None):
+        """
+        rot: list of 3 floats
+            If we're producing a rotated sky,
+            the nemo catalog provided here is 
+            presumnably in that rotated coordinated
+            system. Here though, we're still working 
+            in the original coordinate system, so we'll
+            apply the inverse rotation to the nemo catalog
+            to mask the map.
+        """
         nemo_data = afits.open(nemo_file)[1].data
 
         #cut on snr
@@ -101,11 +138,23 @@ class CMBSky(object):
         ra_deg, dec_deg = nemo_data['RADeg'], nemo_data['decDeg']
         dec,ra = np.radians(dec_deg),np.radians(ra_deg)
 
+        #If we are generating a rotated sky, we assume
+        #that the nemo catalog provided is in that rotated frame.
+        #Here though, we are working in the original frame, so
+        #we need apply the inverse rotation to the nemo catalog
+        if rot is not None:
+            print("applying inverse rotation to nemo catalog coordinates")
+            r = hp.rotator.Rotator(rot=rot, deg=False)
+            theta,phi = np.pi/2 - dec, ra
+            theta_rot, phi_rot = r(theta, phi, inv=True)
+            dec, ra = np.pi/2 - theta_rot, phi_rot
+
         r = mask_radius*utils.arcmin
 
         srcs = np.array([dec, ra])
         mask = (enmap.distance_from_healpix(
             self.nside, srcs, rmax=r) >= r)
+
 
         print("nemo masking %d/%d pixels (f_sky = %.2f) in fgs"%(
             (~mask).sum(),len(mask),
@@ -142,7 +191,7 @@ class CMBSky(object):
                     cib_flux_cut=None, flux_cut_freq=None,
                     radiops_flux_cut=None, nemo_mask_fgs=False,
                     nemo_catalog=None, nemo_snr_min=None,
-                    nemo_mask_radius=None,
+                    nemo_mask_radius=None, rot=None
                  ):
         """
         Somewhat confusing uberfunction for getting 
@@ -227,7 +276,8 @@ class CMBSky(object):
             for cat, snr, rad in zip(nemo_catalog, nemo_snr_min, nemo_mask_radius):
                 nemo_mask = self.get_nemo_source_mask(
                     cat, rad,
-                    snr_min=snr)
+                    snr_min=snr,
+                    rot=rot)
                 fg_mask *= nemo_mask
             
         n = len(fg_mask)
@@ -236,23 +286,43 @@ class CMBSky(object):
         ))
         return fg_mask                 
 
+    def get_rksz_temp(self):
+        return hp.read_map(
+            opj(self.data_dir,
+                "4e3_2048_50_50_ksz.fits"
+                ))
+    
     def get_sky(self, freq, cmb=True, cib=False, tsz=False,
-                ksz=False, radiops=False, cmb_unlensed_alms=None,
-                cmb_alms=None, lmax=4000, fg_model_alms=None,
+                ksz=False, rksz=False, radiops=False,
+                cmb_unlensed_alms=None,
+                cmb_alms=None, lmax=4000,
                 fg_mask=None, mean_fill_fgs=True,
-                fg_model_map=None, fg_model_map_beam=None,
-                survey_mask_hpix=None):
+                fg_model_map=None, bl=None,
+                survey_mask_hpix=None, mask_beamed_map=False,
+                source_flux_cut=None, flux_cut_freq=None):
 
+        if flux_cut_freq is None:
+            flux_cut_freq=freq
         outputs = {}
         fg_map = np.zeros(hp.nside2npix(self.nside))
+        has_fgs = False
         if fg_mask is None:
             fg_mask = np.ones_like(fg_map, dtype=bool)
+            
         if cib:
             cib_temp = self.get_cib_temp(freq)
+            if source_flux_cut is not None:
+                print("cutting cib flux > %.2f mJY at %s GHz"%(source_flux_cut, flux_cut_freq))
+                cib_flux_mask = self.get_cib_flux_mask(flux_cut_freq, source_flux_cut)
+                cib_temp[~cib_flux_mask] = (cib_temp[cib_flux_mask]).mean()
             fg_map += cib_temp
             has_fgs = True
         if radiops:
             ps_temp = self.get_radio_ps_temp(freq)
+            if source_flux_cut is not None:
+                print("cutting radio source flux > %.2f mJY at %s GHz"%(source_flux_cut, flux_cut_freq))
+                ps_flux_mask = self.get_radio_ps_flux_mask(flux_cut_freq, source_flux_cut)
+                ps_temp *= ps_flux_mask
             fg_map += ps_temp
             has_fgs = True
 
@@ -266,26 +336,77 @@ class CMBSky(object):
             fg_map += ksz_temp
             has_fgs = True
 
-        if survey_mask_hpix is not None:
-            fg_map *= survey_mask_hpix
-            #also calculate w factors
-            outputs["w1"] = (survey_mask_hpix).mean()
-            outputs["w2"] = (survey_mask_hpix**2).mean()
-            outputs["w4"] = (survey_mask_hpix**4).mean()
-            print("applied survey mask with fsky:",outputs["w1"])
-            
-        #if we've done some fg masking,
-        #make the masked map and alms
-        if not np.all(fg_mask == True):
-            if mean_fill_fgs:
-                fg_map_masked = fg_map.copy()
-                mask_inds = np.where(~fg_mask)[0]
-                fg_map_masked[mask_inds] = (fg_map[fg_mask]).mean()
+        if rksz:
+            rksz_temp = self.get_rksz_temp()
+            fg_map += rksz_temp
+            has_fgs = True
+
+        if mask_beamed_map:
+            if ((fg_model_map is None) and (survey_mask_hpix is None) and (np.all(fg_mask==1))):
+                fg_alms = hp.map2alm(fg_map, lmax=lmax)
             else:
-                fg_map_masked = fg_map * fg_mask.astype(int)
-            fg_masked_alms = hp.map2alm(fg_map_masked, lmax=lmax)
-            outputs["fg_masked_alms"] = fg_masked_alms
-            outputs["fg_mask"] = fg_mask
+                print("masking beamed map")
+                print("applying beam")
+                mlmax=3*self.nside-1
+                mlamx=lmax
+                fg_alm = hp.map2alm(fg_map, lmax=mlmax)
+                print("fg_alm.dtype:",fg_alm.dtype)
+                fg_alm_beamed = curvedsky.almxfl(fg_alm, bl[:mlmax+1])
+                fg_map_beamed = hp.alm2map(fg_alm_beamed, self.nside)
+
+                if fg_model_map is not None:
+                    print("subtracting fg_model_map")
+                    fg_model_map_hpix = reproject.map2healpix(fg_model_map,
+                                                              nside=self.nside)
+                    fg_map_beamed -= fg_model_map_hpix
+
+                if fg_mask is not None:
+                    print("applying fg_mask")
+                    fg_map_beamed *= fg_mask
+                if survey_mask_hpix is not None:
+                    print("applying survey_mask_hpix")
+                    fg_map_beamed *= survey_mask_hpix
+                    #also calculate w factors
+                    outputs["w1"] = (survey_mask_hpix).mean()
+                    outputs["w2"] = (survey_mask_hpix**2).mean()
+                    outputs["w4"] = (survey_mask_hpix**4).mean()
+                    print("applied survey mask with fsky:",outputs["w1"])
+                outputs["fg_map_beamed"] = fg_map_beamed
+                fg_alms = curvedsky.almxfl(
+                    hp.map2alm(fg_map_beamed, lmax=lmax),
+                    1./bl[:lmax+1]
+                    )
+        else:
+            if survey_mask_hpix is not None:
+                fg_map *= survey_mask_hpix
+                #also calculate w factors
+                outputs["w1"] = (survey_mask_hpix).mean()
+                outputs["w2"] = (survey_mask_hpix**2).mean()
+                outputs["w4"] = (survey_mask_hpix**4).mean()
+                print("applied survey mask with fsky:",outputs["w1"])
+
+            #if we've done some fg masking,
+            #make the masked map and alms
+            if not np.all(fg_mask == True):
+                if mean_fill_fgs:
+                    fg_map_masked = fg_map.copy()
+                    mask_inds = np.where(~fg_mask)[0]
+                    fg_map_fill_value = (fg_map[fg_mask]).mean()
+                    fg_map_masked[mask_inds] = fg_map_fill_value
+                    outputs["fg_map_fill_value"] = fg_map_fill_value
+                else:
+                    fg_map_masked = fg_map * fg_mask.astype(int)
+                    outputs["fg_map_fill_value"] = 0.
+                    print("fg_map_masked.dtype, survey_mask_hpix.dtype:")
+                    print(fg_map_masked.dtype, survey_mask_hpix.dtype)
+                    fg_map_masked *= survey_mask_hpix
+                fg_alms = hp.map2alm(fg_map_masked, lmax=lmax)
+                #outputs["fg_masked_alms"] = fg_masked_alms
+                outputs["fg_mask"] = fg_mask
+            else:
+                fg_alms = hp.map2alm(fg_map, lmax=lmax)
+
+        outputs["fg_alms"] = fg_alms
 
         if cmb:
             if cmb_alms is None:
@@ -302,12 +423,13 @@ class CMBSky(object):
                         return curvedsky.almxfl(
                             alm=kappa_alm,
                             lfilter=lambda x: 1./(x*(x+1)/2))
-                    phi_alms = kappa_to_phi(kappa_alms)
+                    phi_alms = kappa_to_phi(kappa_alms).astype(np.complex64)
                     res = 0.5*utils.arcmin
                     proj='car'
                     shape, wcs = enmap.fullsky_geometry(res=res, proj=proj)
                     print("doing lensing on %s map with res %f"%(
                         proj, res/utils.arcmin))
+                    print(shape, wcs, phi_alms.dtype, cmb_unlensed_alms[0].dtype)
                     t_lensed = lensing.lens_map_curved(
                         shape, wcs, phi_alms,
                         cmb_unlensed_alms[0])[0]
@@ -325,25 +447,24 @@ class CMBSky(object):
             print(cmb_alms)
             total_alms += cmb_alms.astype(np.complex128)
         if has_fgs:
-            fg_alms = hp.map2alm(fg_map, lmax=lmax)
+            #fg_alms = hp.map2alm(fg_map, lmax=lmax)
             total_alms += fg_alms
+            """
             if fg_model_alms is not None:
                 fg_model_alms = change_alm_lmax(
                     fg_model_alms, lmax)
                 fg_modelsub_alms = fg_alms - fg_model_alms
                 outputs["fg_modelsub_alms"] = fg_modelsub_alms
+            """
         else:
             fg_alms = np.zeros_like(total_alms)
-
-
-
-        outputs["fg_alms"] = fg_alms
+        #outputs["fg_alms"] = fg_alms
         outputs["total_alms"] = total_alms
         outputs["cmb_alms"] = cmb_alms
         outputs["cmb_unlensed_alms"] = cmb_unlensed_alms
 
         return outputs
-
+        
     
 class SehgalSky(CMBSky):
     """
@@ -414,6 +535,12 @@ class SehgalSky(CMBSky):
         return hp.read_map(
             opj(self.data_dir,
                 "148_ksz_healpix_nopell_Nside4096_DeltaT_uK.fits"
+                ))
+
+    def get_rksz_temp(self):
+        return hp.read_map(
+            opj(self.data_dir,
+                "4e3_2048_50_50_ksz.fits"
                 ))
 
     def get_kappa_alms(self, lmax):
@@ -520,7 +647,7 @@ class Sehgal10Sky(SehgalSky):
                  rescale_cib=True,
                  rescale_tsz=True):
         super(Sehgal10Sky, self).__init__(data_dir)
-        self.nside=8192
+        self.nside=4096
         self.rescale_cib = rescale_cib
         self.rescale_tsz = rescale_tsz
         self.data_dir = data_dir
@@ -530,6 +657,13 @@ class Sehgal10Sky(SehgalSky):
         
     def get_cib_temp(self, freq,
                      rescale_cib=None):
+
+        if int(freq)==545:
+            print("hacking by 545GHz cib for Sehgal by rescaling 350GHz")
+            t_350 = self.get_cib_temp(350., rescale_cib=rescale_cib)
+            t_545 = t_350 * cib_sed(545.) / cib_sed(350.)
+            return t_545
+
         if rescale_cib is None:
             rescale_cib = self.rescale_cib
         filename = opj(self.data_dir,
@@ -542,7 +676,7 @@ class Sehgal10Sky(SehgalSky):
         m = m_MJysr * get_cib_conversion_factor(freq)
         if rescale_cib:
             m *= 0.75
-        return m
+        return hp.ud_grade(m, self.nside)
     
     def get_cib_flux_mask(self, freq, flux_cut,
                           rescale_cib=None):
@@ -559,6 +693,9 @@ class Sehgal10Sky(SehgalSky):
 
     def get_radio_ps_temp(self, freq,
                           ):
+        if int(freq)==545:
+            print("hacking radio-ps at 545 by returning zero map!")
+            return np.zeros(hp.nside2npix(self.nside))
         filename = opj(
             self.data_dir,
             "%03d_rad_pts_healpix.fits"%int(freq)
@@ -566,13 +703,21 @@ class Sehgal10Sky(SehgalSky):
         m_Jysr = hp.read_map(filename)
         m_MJysr = m_Jysr / 1.e6
         m = m_MJysr * get_cib_conversion_factor(freq)
-        return m
+        return hp.ud_grade(m, self.nside)
 
 
     
     def get_tsz_temp(self, freq, use_orig_maps=None,
                     rescale_tsz=None):
         """frequency in GHz"""
+
+        if int(freq)==545:
+            print("rescaling 350 map for 545 tsz")
+            tsz_350 = self.get_tsz_temp(
+                350., use_orig_maps=use_orig_maps,
+                rescale_tsz=rescale_tsz)
+            tsz_545 = tsz_350 * response_fnc_tsz(545.)/response_fnc_tsz(350.)
+            return tsz_545
         
         if rescale_tsz is None:
             rescale_tsz = self.rescale_tsz
@@ -586,7 +731,7 @@ class Sehgal10Sky(SehgalSky):
         if rescale_tsz:
             tsz_map *= 0.75
         dT = (tsz_map / 1.e6) * flux_density_to_temp(freq)
-        return dT
+        return hp.ud_grade(dT, self.nside)
         """
         print("using rescaled tSZ")
         y = hp.ud_grade(hp.read_map(
@@ -606,7 +751,7 @@ class Sehgal10Sky(SehgalSky):
             opj(self.data_dir,
                 "148_ksz_healpix.fits"
                 ))
-        return ksz_flux_density_Jy * flux_density_to_temp(148.) / 1.e6
+        return hp.ud_grade(ksz_flux_density_Jy * flux_density_to_temp(148.) / 1.e6, self.nside)
 
     def get_kappa_alms(self, lmax):
         kappa_alms = hp.fitsfunc.read_alm(
