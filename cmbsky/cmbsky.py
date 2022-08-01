@@ -362,7 +362,9 @@ class CMBSky(object):
 
                 if fg_mask is not None:
                     print("applying fg_mask")
-                    fg_map_beamed *= fg_mask
+                    print("mean filling map")
+                    fg_map_beamed[~fg_mask] = (fg_map_beamed[fg_mask]).mean()
+                    
                 if survey_mask_hpix is not None:
                     print("applying survey_mask_hpix")
                     fg_map_beamed *= survey_mask_hpix
@@ -796,7 +798,7 @@ class WebSky(CMBSky):
                  data_dir,
                  halo_catalog_name = 'halos.pksc',
                  kappa_map_name = 'kap.fits',
-                 comptony_map_name = 'tsz.fits',
+                 comptony_map_name = 'tsz_8192.fits',
                  ksz_map_name = 'ksz.fits',
                  websky_cosmo = {'Omega_M': 0.31, 'Omega_B': 0.049, 'Omega_L': 0.69, 
                                  'h': 0.68, 'sigma_8': 0.81, 'n_s':0.965},
@@ -997,7 +999,7 @@ class WebSky(CMBSky):
             name of cib file at given frequency
         """
 
-        cib_file_name = "cib_ns4096_nu%s.fits"%self.fmt_freq(freq)
+        cib_file_name = "cib_nu%s.fits"%self.fmt_freq(freq)
         return opj(self.data_dir, cib_file_name)
 
     def kappa_map_file_name(self):
@@ -1038,7 +1040,7 @@ class WebSky(CMBSky):
 
     def get_tsz_temp(self, freq):
         fn = self.comptony_map_file_name()
-        y_map = hp.read_map(fn)
+        y_map = hp.ud_grade(hp.read_map(fn), self.nside)
         return y_map*CONVERSION_FACTORS['Y'][self.fmt_freq(freq)]
 
     def get_radio_ps_map(self, freq):
@@ -1104,3 +1106,41 @@ class WebSky(CMBSky):
             cmb_alms = change_alm_lmax(
                 cmb_alms, lmax)
         return cmb_alms
+
+class WebSkyOld(WebSky):
+    def __init__(self,
+                 data_dir,
+                 halo_catalog_name = 'halos.pksc',
+                 kappa_map_name = 'kap.fits',
+                 comptony_map_name = 'tsz_old.fits',
+                 ksz_map_name = 'ksz.fits',
+                 websky_cosmo = {'Omega_M': 0.31, 'Omega_B': 0.049, 'Omega_L': 0.69, 
+                                 'h': 0.68, 'sigma_8': 0.81, 'n_s':0.965},
+    ):
+        super().__init__(data_dir, halo_catalog_name=halo_catalog_name,
+                         kappa_map_name=kappa_map_name, comptony_map_name=comptony_map_name,
+                         ksz_map_name=ksz_map_name, websky_cosmo=websky_cosmo)
+
+    def cib_map_file_name(self, freq='545'):
+        """get file name of cib map, given a frequency
+
+        Parameters
+        ----------
+
+        freq : str or int
+            frequency of desired map in GHz
+
+        Returns
+        -------
+
+        cib_file_name : str
+            name of cib file at given frequency
+        """
+
+        cib_file_name = "cib_ns4096_nu%s.fits"%self.fmt_freq(freq)
+        return opj(self.data_dir, cib_file_name)
+
+    def get_tsz_temp(self, freq):
+        fn = self.comptony_map_file_name()
+        y_map = hp.read_map(fn)
+        return y_map*CONVERSION_FACTORS['Y'][self.fmt_freq(freq)]
