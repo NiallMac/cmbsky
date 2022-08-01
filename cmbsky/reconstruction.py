@@ -66,9 +66,11 @@ def norm_qtt_asym(est,lmax,glmin,glmax,llmin,llmax,
     if ((est=='src') and (profile is not None)):
         norm = norm_general.qtt_asym(
             est,lmax,glmin,glmax,llmin,llmax,
-            rlmax,TT,OCTG/profile**2,
-            OCTL/profile**2,gtype=gtype)
-        return norm*profile**2
+            rlmax, TT, OCTG/(profile[:glmax+1]**2),
+            OCTL/(profile[:llmax+1]**2), 
+            gtype=gtype)
+        print(norm[0].shape, profile.shape)
+        return (norm[0]*profile**2, norm[1]*profile**2)
     else:
         return norm_general.qtt_asym(
             est,lmax,glmin,glmax,llmin,llmax,
@@ -77,13 +79,18 @@ def norm_qtt_asym(est,lmax,glmin,glmax,llmin,llmax,
 def norm_xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
                    TT,OCTG,OCTL,gtype='',profile=None):
 
-    if ((est in ['lenssrc','srclens']) and (profile is not None)):
+    if ((est=="lenssrc") and (profile is not None)):
         r = norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
-                                  TT, OCTG/profile, OCTL/profile, gtype=gtype)
+                                  TT, OCTG/(profile[:llmax+1]), OCTL/(profile[:llmax+1]), gtype=gtype)
+        return r/profile
+    elif ((est=="srclens") and (profile is not None)):
+        r = norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
+                                  TT, OCTG/(profile[:glmax+1]), OCTL/(profile[:glmax+1]), gtype=gtype)
         return r/profile
     else:
         return norm_general.xtt_asym(est,lmax,glmin,glmax,llmin,llmax,rlmax,
-                                     TT, OCTG, gtype=gtype)
+                                     TT, OCTG, OCTL, gtype=gtype)
+    
 """
 def noise_qtt_asym(est,lmax,rlmin,rlmax,wx0,wxy0,wx1,wxy1,
                     a0a1,b0b1,a0b1,a1b0,gtype='', profile=None):
@@ -439,42 +446,10 @@ def setup_recon(px, lmin, lmax, mlmax,
 
     return recon_stuff
 
-def get_inverse_response_matrix(A_phi, A_src, R_phi_src, R_src_phi):
-    R = np.ones((mlmax+1, 2, 2))
-    R[:,0,1] = (A_phi * R_phi_src).copy()
-    R[:,1,0] = (A_src * R_src_phi).copy()
-    R_inv = np.zeros_like(R)
-    for l in range(mlmax+1):
-        R_inv[l] = np.linalg.inv(R[l])
-    return R_inv
-
-
-def get_N0_matrix_psh(
-        N0_phi, N0_phi_src, 
-        N0_src_phi, N0_src, 
-        R_AB_inv, R_CD_inv):
-    #these input N0s should be normalized!!!
-
-    N0_matrix = np.zeros((mlmax+1, 2, 2))
-    for N0 in (N0_phi, N0_phi_src, N0_src_phi, N0_src):
-        assert N0.shape == (mlmax+1,)
-    N0_matrix[:,0,0] = N0_phi.copy()
-    N0_matrix[:,0,1] = N0_phi_src.copy()
-    N0_matrix[:,1,0] = N0_src_phi.copy()
-    N0_matrix[:,1,1] = N0_src.copy()
-
-    #now the psh version
-    N0_matrix_psh = np.zeros_like(N0_matrix)
-    for l in range(mlmax+1):
-        N0_matrix_psh[l] = np.dot(
-            np.dot(R_AB_inv[l], N0_matrix[l]), (R_CD_inv[l]).T)
-    #0,0 element is the phi_bh N0
-    return N0_matrix_psh
-
 
 def setup_sym_estimator(px, lmin, lmax, mlmax,
                         cltot_X, cltot_Y, cltot_XY,
-                        do_psh=False, profile=None):
+                        do_psh=False, do_prh=False, profile=None):
     """
     Setup quadratic estimators for case of a
     pair of temperature maps X and Y. In particular,
@@ -485,7 +460,14 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     theory N0s assuming the total Cls used in filters
     are appropriate for the maps.
     """
-
+    if do_prh:
+        try:
+            assert profile is not None
+        except AssertionError as e:
+            print("profile should not be None if do_prh=True")
+            raise(e)
+        profile = profile[:mlmax+1]
+    
     output = {} #dictionary for  outputs
     
     #get cls for gradient filter                                                                                                                      
@@ -635,6 +617,38 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     
     output["qfunc_YX"] = qfunc_YX
     output["qfunc_YX_incfilter"] = lambda X,Y: qfunc_YX(filter_X(X), filter_Y(Y))
+
+    def get_inverse_response_matrix(A_phi, A_src, R_phi_src, R_src_phi):
+        R = np.ones((mlmax+1, 2, 2))
+        R[:,0,1] = (A_phi * R_phi_src).copy()
+        R[:,1,0] = (A_src * R_src_phi).copy()
+        R_inv = np.zeros_like(R)
+        for l in range(mlmax+1):
+            R_inv[l] = np.linalg.inv(R[l])
+        return R_inv
+
+
+    def get_N0_matrix_psh(
+            N0_phi, N0_phi_src, 
+            N0_src_phi, N0_src, 
+            R_AB_inv, R_CD_inv):
+        #these input N0s should be normalized!!!
+
+        N0_matrix = np.zeros((mlmax+1, 2, 2))
+        for N0 in (N0_phi, N0_phi_src, N0_src_phi, N0_src):
+            assert N0.shape == (mlmax+1,)
+        N0_matrix[:,0,0] = N0_phi.copy()
+        N0_matrix[:,0,1] = N0_phi_src.copy()
+        N0_matrix[:,1,0] = N0_src_phi.copy()
+        N0_matrix[:,1,1] = N0_src.copy()
+
+        #now the psh version
+        N0_matrix_psh = np.zeros_like(N0_matrix)
+        for l in range(mlmax+1):
+            N0_matrix_psh[l] = np.dot(
+                np.dot(R_AB_inv[l], N0_matrix[l]), (R_CD_inv[l]).T)
+        #0,0 element is the phi_bh N0
+        return N0_matrix_psh
     
     if do_psh:
         #We'll need the following normalization and
@@ -676,6 +690,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         wGsrc_X = 1./cltot_X[:lmax+1]/2
         wGsrc_Y = 1./cltot_Y[:lmax+1]/2
 
+        """
         def get_inverse_response_matrix(A_phi, A_src, R_phi_src, R_src_phi):
             R = np.ones((mlmax+1, 2, 2))
             R[:,0,1] = (A_phi * R_phi_src).copy()
@@ -707,6 +722,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                     np.dot(R_AB_inv[l], N0_matrix[l]), (R_CD_inv[l]).T)
             #0,0 element is the phi_bh N0
             return N0_matrix_psh
+        """
             
         #Get response matrices
         #and N0s
@@ -742,7 +758,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         #First the XYXY case
         N0_XYXY_src_nonorm = noise_spec.qtt_asym(
             "src", mlmax,lmin,lmax,
-            wL_X, wGsrc_Y, wL_X, wGsrc_Y,
+            wLsrc_X, wGsrc_Y, wLsrc_X, wGsrc_Y,
             cltot_X, cltot_Y, cltot_XY, cltot_XY)[0]
         N0_XYXY_src = (
             N0_XYXY_src_nonorm
@@ -901,21 +917,21 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 clfg_X, clfg_Y, clfg_XY)
             N0_tri_XYXY_src_nonorm = noise_spec.qtt_asym(
                 "src", mlmax,lmin,lmax,
-                wL_X, wGsrc_Y, wL_X, wGsrc_Y,
+                wLsrc_X, wGsrc_Y, wLsrc_X, wGsrc_Y,
                 clfg_X, clfg_Y, clfg_XY, clfg_XY)[0]
             N0_tri_XYXY_src = (
                 N0_tri_XYXY_src_nonorm
                 *norm_src_XY*norm_src_XY)
             N0_tri_XYXY_phi_src_nonorm = noise_spec.xtt_asym(
                 "lenssrc", mlmax,lmin,lmax,
-                wL_X, wGphi_Y, wL_X, wGsrc_Y,
+                wL_X, wGphi_Y, wLsrc_X, wGsrc_Y,
                 clfg_X, clfg_Y, clfg_XY, clfg_XY)
             N0_tri_XYXY_phi_src = (
                 N0_tri_XYXY_phi_src_nonorm
                 *norm_tt_XY[0]*norm_src_XY)
             N0_tri_XYXY_src_phi_nonorm = noise_spec.xtt_asym(
                 "srclens", mlmax,lmin,lmax,
-                wL_X, wGsrc_Y, wL_X, wGphi_Y,
+                wLsrc_X, wGsrc_Y, wL_X, wGphi_Y,
                 clfg_X, clfg_Y, clfg_XY, clfg_XY)
             N0_tri_XYXY_src_phi = (
                 N0_tri_XYXY_src_phi_nonorm
@@ -1017,6 +1033,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         output["norm_prof_YX"] = norm_prof_YX
         output["norm_prof_XY"] = norm_prof_XY
         #now the responses
+        print("profile:",profile)
         R_phi_prof_YX = norm_xtt_asym(
             "lenssrc", *norm_args_YX, profile=profile)
         output["R_phi_prof_YX"] = R_phi_prof_YX
@@ -1064,8 +1081,8 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         
         N0_XYXY_prof_nonorm = noise_spec.qtt_asym(
             "src", mlmax,lmin,lmax,
-            wL_X, wGprof_Y, wL_X, wGprof_Y,
-            cltot_X, cltot_Y, cltot_XY, cltot_XY)[0]*profile**2
+            wLprof_X, wGprof_Y, wLprof_X, wGprof_Y,
+            cltot_X, cltot_Y, cltot_XY, cltot_XY)[0]/profile**2
         N0_XYXY_prof = (
             N0_XYXY_prof_nonorm
             *norm_prof_XY*norm_prof_XY)
@@ -1073,8 +1090,8 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         
         N0_XYXY_phi_prof_nonorm = noise_spec.xtt_asym(
             "lenssrc", mlmax,lmin,lmax,
-            wL_X, wGphi_Y, wL_X, wGprof_Y,
-            cltot_X, cltot_Y, cltot_XY, cltot_XY)*profile
+            wL_X, wGphi_Y, wLprof_X, wGprof_Y,
+            cltot_X, cltot_Y, cltot_XY, cltot_XY)/profile
         N0_XYXY_phi_prof = (
             N0_XYXY_phi_prof_nonorm
             *norm_tt_XY[0]*norm_prof_XY)
@@ -1082,10 +1099,10 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         
         N0_XYXY_prof_phi_nonorm = noise_spec.xtt_asym(
             "srclens", mlmax,lmin,lmax,
-            wL_X, wGprof_Y, wL_X, wGphi_Y,
-            cltot_X, cltot_Y, cltot_XY, cltot_XY)*profile
+            wLprof_X, wGprof_Y, wL_X, wGphi_Y,
+            cltot_X, cltot_Y, cltot_XY, cltot_XY)/profile
         N0_XYXY_prof_phi = (
-            N0_XYXY_src_phi_nonorm
+            N0_XYXY_prof_phi_nonorm
             *norm_tt_XY[0]*norm_prof_XY)
         output["N0_XYXY_prof_phi"] = N0_XYXY_prof_phi
         
@@ -1098,25 +1115,28 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         #Now the XYYX case
         N0_XYYX_prof_nonorm = noise_spec.qtt_asym(
             "src", mlmax,lmin,lmax,
-             wL_X, wGprof_Y, wL_Y, wGprof_X,
-             cltot_XY, cltot_XY, cltot_X, cltot_Y)[0]*profile**2
+             wLprof_X, wGprof_Y, wLprof_Y, wGprof_X,
+             cltot_XY, cltot_XY, cltot_X, cltot_Y)[0]/profile**2
         N0_XYYX_prof = (
             N0_XYYX_prof_nonorm
             *norm_prof_XY*norm_prof_YX)
-        N0_XYYX_phi_prof_nonorm = noise_xtt_asym(
+        output["N0_XYYX_prof"] = N0_XYYX_prof
+        N0_XYYX_phi_prof_nonorm = noise_spec.xtt_asym(
             "lenssrc", mlmax,lmin,lmax,
-            wL_X, wGphi_Y, wL_Y, wGprof_X,
-            cltot_XY, cltot_XY, cltot_X, cltot_Y)*profile
+            wL_X, wGphi_Y, wLprof_Y, wGprof_X,
+            cltot_XY, cltot_XY, cltot_X, cltot_Y)/profile
         N0_XYYX_phi_prof = (
             N0_XYYX_phi_prof_nonorm
             *norm_tt_XY[0]*norm_prof_YX)
-        N0_XYYX_prof_phi_nonorm = xtt_asym_noise(
+        output["N0_XYYX_phi_prof"] = N0_XYYX_phi_prof
+        N0_XYYX_prof_phi_nonorm = noise_spec.xtt_asym(
             "srclens", mlmax,lmin,lmax,
-            wL_X, wGprof_Y, wL_Y, wGphi_X,
-            cltot_XY, cltot_XY, cltot_X, cltot_Y)*profile
+            wLprof_X, wGprof_Y, wL_Y, wGphi_X,
+            cltot_XY, cltot_XY, cltot_X, cltot_Y)/profile
         N0_XYYX_prof_phi = (
             N0_XYYX_prof_phi_nonorm
             *norm_prof_XY*norm_tt_YX[0])
+        output["N0_XYYX_prof_phi"] = N0_XYYX_prof_phi
         #now put together to get N0 psh matrix
         N0_matrix_XYYX_prh = get_N0_matrix_prh(
             N0_XYYX_phi[0], N0_XYYX_phi_prof,
@@ -1126,31 +1146,34 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         #And finally YXYX case
         N0_YXYX_prof_nonorm = noise_spec.qtt_asym(
         'src', mlmax,lmin,lmax,
-         wL_Y, wGprof_X, wL_Y, wGprof_X,
-            cltot_Y,cltot_X, cltot_XY,cltot_XY)[0]*profile**2
+         wLprof_Y, wGprof_X, wLprof_Y, wGprof_X,
+            cltot_Y,cltot_X, cltot_XY,cltot_XY)[0]/profile**2
         N0_YXYX_prof = (
             N0_YXYX_prof_nonorm*norm_prof_YX**2)
+        output["N0_YXYX_prof"] = N0_YXYX_prof
         N0_YXYX_phi_prof_nonorm = noise_spec.xtt_asym(
             "lenssrc", mlmax,lmin,lmax,
-             wL_Y, wGphi_X, wL_Y, wGprof_X,
-             cltot_Y,cltot_X, cltot_XY,cltot_XY)*profile
+             wL_Y, wGphi_X, wLprof_Y, wGprof_X,
+             cltot_X,cltot_Y, cltot_XY,cltot_XY)/profile
         N0_YXYX_phi_prof = (
             N0_YXYX_phi_prof_nonorm
             *norm_tt_YX[0]*norm_prof_YX)
+        output["N0_YXYX_phi_prof"] = N0_YXYX_phi_prof
         N0_YXYX_prof_phi_nonorm = noise_spec.xtt_asym(
             "srclens", mlmax,lmin,lmax,
-             wL_Y, wGprof_X, wL_Y, wGphi_X,
-             cltot_Y,cltot_X, cltot_XY,cltot_XY)*profile
+             wLprof_Y, wGprof_X, wL_Y, wGphi_X,
+             cltot_X,cltot_Y, cltot_XY,cltot_XY)/profile
         N0_YXYX_prof_phi = (
             N0_YXYX_prof_phi_nonorm
             *norm_prof_YX*norm_tt_YX[0])
+        output["N0_YXYX_prof_phi"] = N0_YXYX_prof_phi
         #now put together to get N0 prh matrix
         N0_matrix_YXYX_prh = get_N0_matrix_prh(
             N0_YXYX_phi[0], N0_YXYX_phi_prof,
             N0_YXYX_prof_phi, N0_YXYX_prof,
             R_matrix_YX_inv, R_matrix_YX_inv)
         
-        #N0 for source-hardened phi is the 0,0th 
+        #N0 for profile-hardened phi is the 0,0th 
         #element of the N0 matrix (at each l)
         N0_XYXY_phi_prh = N0_matrix_XYXY_prh[:,0,0].copy()
         N0_XYYX_phi_prh = N0_matrix_XYYX_prh[:,0,0].copy()
@@ -1163,14 +1186,18 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         #But we do now have the
         #response matrices and N0s.
         #Now we can define the qfuncs
-        def qfunc_XY_prh(X_filtered, Y_filtered):
-
-            #first run the source estimator
+        def qfunc_prof_XY(X_filtered, Y_filtered):
             s_nobh_nonorm = qe.qe_source(
                 px, mlmax, X_filtered,
                 xfTalm=Y_filtered, profile=profile)
             #and normalize
-            s_nobh = curvedsky.almxfl(s_nobh_nonorm, norm_prof_XY)
+            return curvedsky.almxfl(s_nobh_nonorm, norm_prof_XY)
+        output["qfunc_prof_XY"] = qfunc_prof_XY
+        
+        def qfunc_XY_prh(X_filtered, Y_filtered):
+
+            #first run the normalized source estimator
+            s_nobh = qfunc_prof_XY(X_filtered, Y_filtered)
 
             #And now the phi estimator
             #            almxfl(phi_nobh[1], norm_tt_XY[1]))
@@ -1186,14 +1213,19 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                       )
             #note no curl component
             return (phi_bh, None)
-        
-        def qfunc_YX_prh(X_filtered, Y_filtered):
-                                                                 
+
+        def qfunc_prof_YX(X_filtered, Y_filtered):
             s_nobh_nonorm = qe.qe_source(
                 px, mlmax, Y_filtered,
                 xfTalm=X_filtered, profile=profile)
             #and normalize
-            s_nobh = curvedsky.almxfl(s_nobh_nonorm, norm_prof_YX)
+            return curvedsky.almxfl(s_nobh_nonorm, norm_prof_YX)
+        output["qfunc_prof_YX"] = qfunc_prof_YX
+        
+        def qfunc_YX_prh(X_filtered, Y_filtered):
+                                                                 
+            #normalized source estimator
+            s_nobh = qfunc_prof_YX(X_filtered, Y_filtered)
 
             #And now the phi estimator
             phi_nobh = qfunc_YX(X_filtered, Y_filtered)
@@ -1223,22 +1255,22 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 clfg_X, clfg_Y, clfg_XY)
             N0_tri_XYXY_prof_nonorm = noise_spec.qtt_asym(
                 "src", mlmax,lmin,lmax,
-                wL_X, wGprof_Y, wL_X, wGprof_Y,
-                clfg_X, clfg_Y, clfg_XY, clfg_XY)[0]*profile**2
+                wLprof_X, wGprof_Y, wLprof_X, wGprof_Y,
+                clfg_X, clfg_Y, clfg_XY, clfg_XY)[0]/profile**2
             N0_tri_XYXY_prof = (
                 N0_tri_XYXY_prof_nonorm
                 *norm_prof_XY*norm_prof_XY)
             N0_tri_XYXY_phi_prof_nonorm = noise_spec.xtt_asym(
                 "lenssrc", mlmax,lmin,lmax,
-                wL_X, wGphi_Y, wL_X, wGprof_Y,
-                clfg_X, clfg_Y, clfg_XY, clfg_XY)*profile
+                wL_X, wGphi_Y, wLprof_Y, wGprof_X,
+                clfg_X, clfg_Y, clfg_XY, clfg_XY)/profile
             N0_tri_XYXY_phi_prof = (
                 N0_tri_XYXY_phi_prof_nonorm
                 *norm_tt_XY[0]*norm_prof_XY)
             N0_tri_XYXY_prof_phi_nonorm = noise_spec.xtt_asym(
                 "srclens", mlmax,lmin,lmax,
-                wL_X, wGprof_Y, wL_X, wGphi_Y,
-                clfg_X, clfg_Y, clfg_XY, clfg_XY)*profile
+                wLprof_X, wGprof_Y, wL_X, wGphi_Y,
+                clfg_X, clfg_Y, clfg_XY, clfg_XY)/profile
             N0_tri_XYXY_prof_phi = (
                 N0_tri_XYXY_prof_phi_nonorm
                 *norm_tt_XY[0]*norm_prof_XY)
@@ -1258,21 +1290,21 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 clfg_X, clfg_Y, clfg_XY)
             N0_tri_XYYX_prof_nonorm = noise_spec.qtt_asym(
                 "src", mlmax,lmin,lmax,
-                 wL_X, wGprof_Y, wL_Y, wGprof_X,
+                 wLprof_X, wGprof_Y, wLprof_Y, wGprof_X,
                  clfg_XY, clfg_XY, clfg_X, clfg_Y)[0]*profile**2
             N0_tri_XYYX_prof = (
                 N0_tri_XYYX_prof_nonorm
                 *norm_prof_XY*norm_prof_YX)
             N0_tri_XYYX_phi_prof_nonorm = noise_spec.xtt_asym(
                 "lenssrc", mlmax,lmin,lmax,
-                wL_X, wGphi_Y, wL_Y, wGprof_X,
+                wL_X, wGphi_Y, wLprof_Y, wGprof_X,
                 clfg_XY, clfg_XY, clfg_X, clfg_Y)*profile
             N0_tri_XYYX_phi_prof = (
                 N0_tri_XYYX_phi_prof_nonorm
                 *norm_tt_XY[0]*norm_prof_YX)
             N0_tri_XYYX_prof_phi_nonorm = noise_spec.xtt_asym(
                 "srclens", mlmax,lmin,lmax,
-                wL_X, wGprof_Y, wL_Y, wGphi_X,
+                wLprof_X, wGprof_Y, wL_Y, wGphi_X,
                 clfg_XY, clfg_XY, clfg_X, clfg_Y)
             N0_tri_XYYX_prof_phi = (
                 N0_XYYX_prof_phi_nonorm
@@ -1293,20 +1325,20 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 clfg_X, clfg_Y, clfg_XY)
             N0_tri_YXYX_prof_nonorm = noise_spec.qtt_asym(
             'src', mlmax,lmin,lmax,
-             wL_Y, wGprof_X, wL_Y, wGprof_X,
+             wLprof_Y, wGprof_X, wLprof_Y, wGprof_X,
              clfg_Y,clfg_X, clfg_XY,clfg_XY)[0]*profile**2
             N0_tri_YXYX_prof = (
                 N0_tri_YXYX_prof_nonorm*norm_prof_YX**2)
             N0_tri_YXYX_phi_prof_nonorm = noise_spec.xtt_asym(
                 "lenssrc", mlmax,lmin,lmax,
-                 wL_Y, wGphi_X, wL_Y, wGprof_X,
+                 wL_Y, wGphi_X, wLprof_Y, wGprof_X,
                  clfg_Y,clfg_X, clfg_XY, clfg_XY)*profile
             N0_tri_YXYX_phi_prof = (
                 N0_tri_YXYX_phi_prof_nonorm
                 *norm_tt_YX[0]*norm_prof_YX)
             N0_tri_YXYX_prof_phi_nonorm = noise_spec.xtt_asym(
                 "srclens", mlmax,lmin,lmax,
-                 wL_Y, wGprof_X, wL_Y, wGphi_X,
+                  wLprof_Y, wGprof_X, wL_Y, wGphi_X,
                  clfg_Y,clfg_X, clfg_XY,clfg_XY)*profile
             N0_tri_YXYX_prof_phi = (
                 N0_tri_YXYX_prof_phi_nonorm
