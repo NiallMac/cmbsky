@@ -439,7 +439,7 @@ def setup_recon(px, lmin, lmax, mlmax,
         recon_stuff_sym = setup_sym_estimator(
             px, lmin, lmax, mlmax,
             tcls_X['TT'], tcls_Y['TT'],  tcls_XY['TT'],
-            do_psh=do_psh
+            do_psh=do_psh, do_prh=do_prh, profile=profile
         )
         assert set(recon_stuff_sym.keys()).isdisjoint(recon_stuff.keys())
         recon_stuff.update(recon_stuff_sym)
@@ -633,6 +633,8 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             N0_src_phi, N0_src, 
             R_AB_inv, R_CD_inv):
         #these input N0s should be normalized!!!
+        #and N0_phi should be for grad or curl only
+        #i.e. not a tuple with both
 
         N0_matrix = np.zeros((mlmax+1, 2, 2))
         for N0 in (N0_phi, N0_phi_src, N0_src_phi, N0_src):
@@ -662,6 +664,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             "src", *norm_args_XY)[0] #I think this should be the same as YX?
         output["norm_src_YX"] = norm_src_YX
         output["norm_src_XY"] = norm_src_XY
+
         #now the responses
         R_phi_src_YX = norm_general.xtt_asym(
             "lenssrc", *norm_args_YX)
@@ -1022,9 +1025,6 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         #response functions 
         #first the src norms
         print("getting prh norms and responses")
-        norm_args_YX = (mlmax, lmin, lmax, lmin,
-            lmax, lmax, ucls['TT'][:lmax+1], cltot_X,
-            cltot_Y)
         norm_prof_YX = norm_qtt_asym(
             "src", *norm_args_YX, profile=profile)[0] #tempura returns dummy 
                                      #curl component for src
@@ -1064,10 +1064,10 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         #Get response matrices
         #and N0s
         print("getting prh N0s")
-        R_matrix_XY_inv = get_inverse_response_matrix(
+        R_matrix_XY_prh_inv = get_inverse_response_matrix(
             norm_tt_XY[0], norm_prof_XY,
             R_phi_prof_XY, R_prof_phi_XY)
-        R_matrix_YX_inv = get_inverse_response_matrix(
+        R_matrix_YX_prh_inv = get_inverse_response_matrix(
             norm_tt_YX[0], norm_prof_YX,
             R_phi_prof_YX, R_prof_phi_YX)
         
@@ -1110,7 +1110,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         N0_matrix_XYXY_prh = get_N0_matrix_prh(
             N0_XYXY_phi[0], N0_XYXY_phi_prof,
             N0_XYXY_prof_phi, N0_XYXY_prof,
-            R_matrix_XY_inv, R_matrix_XY_inv)
+            R_matrix_XY_prh_inv, R_matrix_XY_prh_inv)
             
         #Now the XYYX case
         N0_XYYX_prof_nonorm = noise_spec.qtt_asym(
@@ -1141,37 +1141,42 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         N0_matrix_XYYX_prh = get_N0_matrix_prh(
             N0_XYYX_phi[0], N0_XYYX_phi_prof,
             N0_XYYX_prof_phi, N0_XYYX_prof,
-            R_matrix_XY_inv, R_matrix_YX_inv)
-        
+            R_matrix_XY_prh_inv, R_matrix_YX_prh_inv)
+
         #And finally YXYX case
         N0_YXYX_prof_nonorm = noise_spec.qtt_asym(
-        'src', mlmax,lmin,lmax,
-         wLprof_Y, wGprof_X, wLprof_Y, wGprof_X,
-            cltot_Y,cltot_X, cltot_XY,cltot_XY)[0]/profile**2
+            "src", mlmax,lmin,lmax,
+            wLprof_Y, wGprof_X, wLprof_Y, wGprof_X,
+            cltot_Y, cltot_X, cltot_XY, cltot_XY)[0]/profile**2
+
         N0_YXYX_prof = (
-            N0_YXYX_prof_nonorm*norm_prof_YX**2)
+            N0_YXYX_prof_nonorm
+            *norm_prof_YX*norm_prof_YX)
         output["N0_YXYX_prof"] = N0_YXYX_prof
+        
         N0_YXYX_phi_prof_nonorm = noise_spec.xtt_asym(
             "lenssrc", mlmax,lmin,lmax,
-             wL_Y, wGphi_X, wLprof_Y, wGprof_X,
-             cltot_X,cltot_Y, cltot_XY,cltot_XY)/profile
+            wL_Y, wGphi_X, wLprof_Y, wGprof_X,
+            cltot_Y, cltot_X, cltot_XY, cltot_XY)/profile
         N0_YXYX_phi_prof = (
             N0_YXYX_phi_prof_nonorm
             *norm_tt_YX[0]*norm_prof_YX)
         output["N0_YXYX_phi_prof"] = N0_YXYX_phi_prof
+
         N0_YXYX_prof_phi_nonorm = noise_spec.xtt_asym(
             "srclens", mlmax,lmin,lmax,
-             wLprof_Y, wGprof_X, wL_Y, wGphi_X,
-             cltot_X,cltot_Y, cltot_XY,cltot_XY)/profile
+            wLprof_Y, wGprof_X, wL_Y, wGphi_X,
+            cltot_Y, cltot_X, cltot_XY, cltot_XY)/profile
         N0_YXYX_prof_phi = (
             N0_YXYX_prof_phi_nonorm
-            *norm_prof_YX*norm_tt_YX[0])
+            *norm_tt_YX[0]*norm_prof_YX)
         output["N0_YXYX_prof_phi"] = N0_YXYX_prof_phi
+
         #now put together to get N0 prh matrix
         N0_matrix_YXYX_prh = get_N0_matrix_prh(
             N0_YXYX_phi[0], N0_YXYX_phi_prof,
             N0_YXYX_prof_phi, N0_YXYX_prof,
-            R_matrix_YX_inv, R_matrix_YX_inv)
+            R_matrix_YX_prh_inv, R_matrix_YX_prh_inv)
         
         #N0 for profile-hardened phi is the 0,0th 
         #element of the N0 matrix (at each l)
@@ -1208,11 +1213,15 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             # (s_bh   )        (s_nobh)
             # so phi_bh = (R_inv)_00 * phi_nobh
             #           + (R_inv)_01 * s_nobh
-            phi_bh = (curvedsky.almxfl(phi_nobh[0], R_matrix_XY_inv[:,0,0])
-                      +curvedsky.almxfl(s_nobh, R_matrix_XY_inv[:,0,1])
+            phi_bh = (curvedsky.almxfl(phi_nobh[0], R_matrix_XY_prh_inv[:,0,0])
+                      +curvedsky.almxfl(s_nobh, R_matrix_XY_prh_inv[:,0,1])
                       )
             #note no curl component
             return (phi_bh, None)
+
+        output["qfunc_XY_prh"] = qfunc_XY_prh
+        output["qfunc_XY_prh_incfilter"] = lambda X,Y:  qfunc_XY_prh(
+            filter_X(X), filter_Y(Y))
 
         def qfunc_prof_YX(X_filtered, Y_filtered):
             s_nobh_nonorm = qe.qe_source(
@@ -1229,15 +1238,12 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
 
             #And now the phi estimator
             phi_nobh = qfunc_YX(X_filtered, Y_filtered)
-            phi_bh = (curvedsky.almxfl(phi_nobh[0], R_matrix_YX_inv[:,0,0])
-                      +curvedsky.almxfl(s_nobh, R_matrix_YX_inv[:,0,1])
+            phi_bh = (curvedsky.almxfl(phi_nobh[0], R_matrix_YX_prh_inv[:,0,0])
+                      +curvedsky.almxfl(s_nobh, R_matrix_YX_prh_inv[:,0,1])
                       )
             #note no curl component
             return (phi_bh, None)
         
-        output["qfunc_XY_prh"] = qfunc_XY_prh
-        output["qfunc_XY_prh_incfilter"] = lambda X,Y:  qfunc_XY_prh(
-            filter_X(X), filter_Y(Y))
         output["qfunc_YX_prh"] = qfunc_YX_prh
         output["qfunc_YX_prh_incfilter"] = lambda X,Y: qfunc_YX_prh(
             filter_X(X), filter_Y(Y))
@@ -1262,7 +1268,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
                 *norm_prof_XY*norm_prof_XY)
             N0_tri_XYXY_phi_prof_nonorm = noise_spec.xtt_asym(
                 "lenssrc", mlmax,lmin,lmax,
-                wL_X, wGphi_Y, wLprof_Y, wGprof_X,
+                wL_X, wGphi_Y, wLprof_X, wGprof_Y,
                 clfg_X, clfg_Y, clfg_XY, clfg_XY)/profile
             N0_tri_XYXY_phi_prof = (
                 N0_tri_XYXY_phi_prof_nonorm
@@ -1278,7 +1284,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             N0_tri_matrix_XYXY_prh = get_N0_matrix_prh(
                 N0_tri_XYXY_phi[0], N0_tri_XYXY_phi_prof,
                 N0_tri_XYXY_prof_phi, N0_tri_XYXY_prof,
-                R_matrix_XY_inv, R_matrix_XY_inv)
+                R_matrix_XY_prh_inv, R_matrix_XY_prh_inv)
 
             return N0_tri_matrix_XYXY_prh[:,0,0]
 
@@ -1313,7 +1319,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             N0_tri_matrix_XYYX_prh = get_N0_matrix_prh(
                 N0_tri_XYYX_phi[0], N0_tri_XYYX_phi_prof,
                 N0_tri_XYYX_prof_phi, N0_tri_XYYX_prof,
-                R_matrix_XY_inv, R_matrix_YX_inv)
+                R_matrix_XY_prh_inv, R_matrix_YX_prh_inv)
             return N0_tri_matrix_XYYX_prh[:,0,0]
 
         def get_fg_trispectrum_N0_YXYX_prh(clfg_X, clfg_Y, clfg_XY):
@@ -1347,7 +1353,7 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
             N0_tri_matrix_YXYX_prh = get_N0_matrix_prh(
                 N0_tri_YXYX_phi[0], N0_tri_YXYX_phi_prof,
                 N0_tri_YXYX_prof_phi, N0_tri_YXYX_prof,
-                R_matrix_YX_inv, R_matrix_YX_inv)
+                R_matrix_YX_prh_inv, R_matrix_YX_prh_inv)
 
             return N0_tri_matrix_YXYX_prh[:,0,0]
 
@@ -1386,10 +1392,21 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         w_YX[2:mlmax+1] = w_YX[2:mlmax+1]/w_sum[2:mlmax+1]
         return w_XY, w_YX, w_sum
     
-    w_XY_g, w_YX_g, w_sum_g = get_sym_weights(
-        N0_XYXY_phi[0], N0_XYYX_phi[0], N0_YXYX_phi[0])
-    w_XY_c, w_YX_c, w_sum_c = get_sym_weights(
-        N0_XYXY_phi[1], N0_XYYX_phi[1], N0_YXYX_phi[1])
+    try:
+        w_XY_g, w_YX_g, w_sum_g = get_sym_weights(
+            N0_XYXY_phi[0], N0_XYYX_phi[0], N0_YXYX_phi[0])
+        w_XY_c, w_YX_c, w_sum_c = get_sym_weights(
+            N0_XYXY_phi[1], N0_XYYX_phi[1], N0_YXYX_phi[1])
+    except np.linalg.LinAlgError as e:
+        print("""Singular N0 covariance matrix, probably
+you have the same map in all legs?""")
+        w_XY_g, w_YX_g, w_sum_g = 1., 0., 1.
+        w_XY_c, w_YX_c, w_sum_c = 1., 0., 1.
+        
+    #w_XY_g, w_YX_g, w_sum_g = get_sym_weights(
+    #    N0_XYXY_phi[0], N0_XYYX_phi[0], N0_YXYX_phi[0])
+    #w_XY_c, w_YX_c, w_sum_c = get_sym_weights(
+    #    N0_XYXY_phi[1], N0_XYYX_phi[1], N0_YXYX_phi[1])
     output["w_XY"] = (w_XY_g, w_XY_c)
     output["w_YX"] = (w_YX_g, w_YX_c)
     output["w_sum"] = (w_sum_g, w_sum_c)
@@ -1469,8 +1486,13 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
     output["get_fg_trispectrum_N0_sym"] = get_fg_trispectrum_N0_sym
     
     if do_psh:
-        w_XY_psh, w_YX_psh, w_sum_psh = get_sym_weights(
-            N0_XYXY_phi_psh, N0_XYYX_phi_psh, N0_YXYX_phi_psh)
+        try:
+            w_XY_psh, w_YX_psh, w_sum_psh = get_sym_weights(
+                N0_XYXY_phi_psh, N0_XYYX_phi_psh, N0_YXYX_phi_psh)
+        except np.linalg.LinAlgError as e:
+            print("""Singular N0 covariance matrix, probably
+you have the same map in all legs?""")
+            w_XY_psh, w_YX_psh, w_sum_psh = 1., 0., 1.                                                                                  
         output["w_XY_psh"] = w_XY_psh
         output["w_YX_psh"] = w_YX_psh
         output["w_sum_psh"] = w_sum_psh
@@ -1519,8 +1541,14 @@ def setup_sym_estimator(px, lmin, lmax, mlmax,
         output["get_fg_trispectrum_N0_sym_psh"] = get_fg_trispectrum_N0_sym_psh
 
     if do_prh:
-        w_XY_prh, w_YX_prh, w_sum_prh = get_sym_weights(
-            N0_XYXY_phi_prh, N0_XYYX_phi_prh, N0_YXYX_phi_prh)
+        try:
+            w_XY_prh, w_YX_prh, w_sum_prh = get_sym_weights(
+                N0_XYXY_phi_prh, N0_XYYX_phi_prh, N0_YXYX_phi_prh)
+        except np.linalg.LinAlgError as e:
+            print("""Singular N0 covariance matrix, probably
+you have the same map in all legs?""")
+            w_XY_prh, w_YX_prh, w_sum_prh = 1., 0., 1.
+            
         output["w_XY_prh"] = w_XY_prh
         output["w_YX_prh"] = w_YX_prh
         output["w_sum_prh"] = w_sum_prh

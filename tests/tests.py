@@ -61,7 +61,7 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
         #and N_l^Z = N_l^Y - a^2 N_l^X 
         a = r * np.sqrt(Nl_tt_X*Nl_tt_Y)/Nl_tt_X
         Nl_tt_Z = Nl_tt_Y - a**2 * Nl_tt_X
-
+        
         #Read in foreground cl
         cl_fg_X = np.loadtxt(CL_TSZ_FILE)[:mlmax+1]
         cl_fg_Y = 0.1**2 * cl_fg_X
@@ -86,10 +86,23 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
         """
         # Setup the symmetrized estimator
         print("setting up estimators")
+        #normal setup for XX
+        recon_setup = setup_recon(px, lmin, lmax, mlmax,
+                                  tcls_X = {"TT" : cltot_X},
+                                  do_psh=do_psh, do_prh=do_prh,
+                                  profile=PROFILE, get_pol_norms=False)
+        #XY, YX and sym setup
         sym_setup = setup_sym_estimator(px, lmin, lmax, mlmax,
                                         cltot_X, cltot_Y, cltot_XY,
                                         do_psh=do_psh, do_prh=do_prh,
                                         profile=PROFILE)
+
+        #also do sym setup with XX to compare to normal setup
+        sym_setup_XX = setup_sym_estimator(px, lmin, lmax, mlmax,
+                                           cltot_X, cltot_X, cltot_X,
+                                           do_psh=do_psh, do_prh=do_prh,
+                                           profile=PROFILE)
+
         
         qfunc_XY = sym_setup["qfunc_XY_incfilter"]
         qfunc_YX = sym_setup["qfunc_YX_incfilter"]
@@ -111,15 +124,21 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
         #- cross-correlating with input
         #- getting auto cls
         cl_dict = {"kk_XY" : [],
+                   "kk_XX_asym" : [], #using sym_setup_XX
+                   "kk_XX" : [], #using recon_setup
                    "kxi_XY" : [],
                    "kk_YX" : [],
                    "kxi_YX" : [],
+                   "kxi_XX" : [],
                    "kk_sym" : [],
                    "kxi_sym" : [],
                    "ii" : [], #input cl_kappa,
                    "kk_gaussian_XY" : [],
                    "kk_gaussian_YX" : [],
+                   "kk_gaussian_XYYX" : [],
                    "kk_gaussian_sym" : [],
+                   "kk_gaussian_XX_asym" : [], #using sym_setup_XX
+                   "kk_gaussian_XX" : [], #using recon_setup
         }
         for key in list(cl_dict.keys()):
             if do_psh:
@@ -148,11 +167,13 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
 
             X = cmb_alm+noise_alm_X
             Y = cmb_alm+noise_alm_Y
+            Xf, Yf = sym_setup["filter_X"](X), sym_setup["filter_Y"](Y)
 
             cmb_gaussian = curvedsky.rand_alm(tcls_nonoise['TT'],
                                           seed=isim*(10*nsim)+2)
-            X_gaussian = cmb_alm+noise_alm_X
-            Y_gaussian = cmb_alm+noise_alm_Y
+            X_gaussian = cmb_gaussian+noise_alm_X
+            Y_gaussian = cmb_gaussian+noise_alm_Y
+            Xf_gaussian, Yf_gaussian = sym_setup["filter_X"](X), sym_setup["filter_Y"](Y)
 
             X_fg_gaussian = curvedsky.rand_alm(cl_fg_X, seed=isim*(10*nsim)+3)
             Y_fg_gaussian = 0.1*X_fg_gaussian
@@ -180,55 +201,7 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
                 kappa_XY_gaussian = lensing.phi_to_kappa(phi_XY_gaussian[0])
                 kappa_YX_gaussian = lensing.phi_to_kappa(phi_YX_gaussian[0])
                 kappa_sym_gaussian = lensing.phi_to_kappa(phi_sym_gaussian[0])
-            if do_psh:
-                print("psh case")
-                phi_XY_psh = qfunc_XY_psh(X, Y)
-                phi_YX_psh = qfunc_YX_psh(X, Y)
-                phi_sym_psh = qfunc_sym_psh(
-                    None, None, phi_XY=phi_XY_psh, phi_YX=phi_YX_psh
-                )
 
-                kappa_XY_psh = lensing.phi_to_kappa(phi_XY_psh[0])
-                kappa_YX_psh = lensing.phi_to_kappa(phi_YX_psh[0])
-                kappa_sym_psh = lensing.phi_to_kappa(phi_sym_psh[0])
-
-                print("running psh gaussian case")
-                phi_XY_psh_gaussian = qfunc_XY_psh(X_gaussian, Y_gaussian)
-                phi_YX_psh_gaussian = qfunc_YX_psh(X_gaussian, Y_gaussian)
-                phi_sym_psh_gaussian = qfunc_sym_psh(
-                    None, None, phi_XY=phi_XY_psh_gaussian, phi_YX=phi_YX_psh_gaussian
-                )
-
-                kappa_XY_psh_gaussian = lensing.phi_to_kappa(phi_XY_psh_gaussian[0])
-                kappa_YX_psh_gaussian = lensing.phi_to_kappa(phi_YX_psh_gaussian[0])
-                kappa_sym_psh_gaussian = lensing.phi_to_kappa(phi_sym_psh_gaussian[0])
-
-            if do_prh:
-                print("prh case")
-                phi_XY_prh = qfunc_XY_prh(X, Y)
-                phi_YX_prh = qfunc_YX_prh(X, Y)
-                phi_sym_prh = qfunc_sym_prh(
-                    None, None, phi_XY=phi_XY_prh, phi_YX=phi_YX_prh
-                )
-
-                kappa_XY_prh = lensing.phi_to_kappa(phi_XY_prh[0])
-                kappa_YX_prh = lensing.phi_to_kappa(phi_YX_prh[0])
-                kappa_sym_prh = lensing.phi_to_kappa(phi_sym_prh[0])
-
-                print("running prh gaussian case")
-                phi_XY_prh_gaussian = qfunc_XY_prh(X_gaussian, Y_gaussian)
-                phi_YX_prh_gaussian = qfunc_YX_prh(X_gaussian, Y_gaussian)
-                phi_sym_prh_gaussian = qfunc_sym_prh(
-                    None, None, phi_XY=phi_XY_prh_gaussian, phi_YX=phi_YX_prh_gaussian
-                )
-
-                kappa_XY_prh_gaussian = lensing.phi_to_kappa(phi_XY_prh_gaussian[0])
-                kappa_YX_prh_gaussian = lensing.phi_to_kappa(phi_YX_prh_gaussian[0])
-                kappa_sym_prh_gaussian = lensing.phi_to_kappa(phi_sym_prh_gaussian[0])
-                
-            print("getting Cls")
-            #cross with input
-            if do_qe:
                 cl_dict["kxi_XY"].append(binner(
                     curvedsky.alm2cl(kappa_XY, kappa_alm)
                 ))
@@ -258,7 +231,29 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
                 cl_dict["kk_sym"].append(binner(
                     curvedsky.alm2cl(kappa_sym)
                 ))
+
             if do_psh:
+                print("psh case")
+                phi_XY_psh = qfunc_XY_psh(X, Y)
+                phi_YX_psh = qfunc_YX_psh(X, Y)
+                phi_sym_psh = qfunc_sym_psh(
+                    None, None, phi_XY=phi_XY_psh, phi_YX=phi_YX_psh
+                )
+
+                kappa_XY_psh = lensing.phi_to_kappa(phi_XY_psh[0])
+                kappa_YX_psh = lensing.phi_to_kappa(phi_YX_psh[0])
+                kappa_sym_psh = lensing.phi_to_kappa(phi_sym_psh[0])
+
+                print("running psh gaussian case")
+                phi_XY_psh_gaussian = qfunc_XY_psh(X_gaussian, Y_gaussian)
+                phi_YX_psh_gaussian = qfunc_YX_psh(X_gaussian, Y_gaussian)
+                phi_sym_psh_gaussian = qfunc_sym_psh(
+                    None, None, phi_XY=phi_XY_psh_gaussian, phi_YX=phi_YX_psh_gaussian
+                )
+                kappa_XY_psh_gaussian = lensing.phi_to_kappa(phi_XY_psh_gaussian[0])
+                kappa_YX_psh_gaussian = lensing.phi_to_kappa(phi_YX_psh_gaussian[0])
+                kappa_sym_psh_gaussian = lensing.phi_to_kappa(phi_sym_psh_gaussian[0])
+
                 cl_dict["kxi_XY_psh"].append(binner(
                     curvedsky.alm2cl(kappa_XY_psh, kappa_alm)
                 ))
@@ -277,7 +272,40 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
                 cl_dict["kk_gaussian_sym_psh"].append(binner(
                     curvedsky.alm2cl(kappa_sym_psh_gaussian)
                 ))
+
+                
             if do_prh:
+                print("prh case")
+                phi_XY_prh = qfunc_XY_prh(X, Y)
+                phi_YX_prh = qfunc_YX_prh(X, Y)
+                phi_sym_prh = qfunc_sym_prh(
+                    None, None, phi_XY=phi_XY_prh, phi_YX=phi_YX_prh
+                )
+                kappa_XY_prh = lensing.phi_to_kappa(phi_XY_prh[0])
+                kappa_YX_prh = lensing.phi_to_kappa(phi_YX_prh[0])
+                kappa_sym_prh = lensing.phi_to_kappa(phi_sym_prh[0])
+
+                #test XX case
+                kappa_XX_prh = lensing.phi_to_kappa(
+                    recon_setup["qfunc_tt_prh"](dummy_teb(Xf), dummy_teb(Xf))[0])
+                kappa_XX_sym_prh = lensing.phi_to_kappa(sym_setup_XX["qfunc_XY_prh"](Xf, Xf)[0])
+
+                print("running prh gaussian case")
+                phi_XY_prh_gaussian = qfunc_XY_prh(X_gaussian, Y_gaussian)
+                phi_YX_prh_gaussian = qfunc_YX_prh(X_gaussian, Y_gaussian)
+                phi_sym_prh_gaussian = qfunc_sym_prh(
+                    None, None, phi_XY=phi_XY_prh_gaussian, phi_YX=phi_YX_prh_gaussian
+                )
+
+                kappa_XY_prh_gaussian = lensing.phi_to_kappa(phi_XY_prh_gaussian[0])
+                kappa_YX_prh_gaussian = lensing.phi_to_kappa(phi_YX_prh_gaussian[0])
+                kappa_sym_prh_gaussian = lensing.phi_to_kappa(phi_sym_prh_gaussian[0])
+
+                #test XX case
+                kappa_XX_prh_gaussian = lensing.phi_to_kappa(
+                    recon_setup["qfunc_tt_prh"](
+                        dummy_teb(Xf_gaussian), dummy_teb(Xf_gaussian))[0])
+
                 print("getting prh Cls")
                 cl_dict["kxi_XY_prh"].append(binner(
                     curvedsky.alm2cl(kappa_XY_prh, kappa_alm)
@@ -288,17 +316,27 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
                 cl_dict["kxi_sym_prh"].append(binner(
                     curvedsky.alm2cl(kappa_sym_prh, kappa_alm)
                 ))
+
+                cl_dict["kk_XX_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_XX_prh)
+                    ))
+                cl_dict["kk_XX_asym_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_XX_sym_prh)
+                    ))
+
+                
                 cl_dict["kk_gaussian_XY_prh"].append(binner(
                     curvedsky.alm2cl(kappa_XY_prh_gaussian)
                 ))
                 cl_dict["kk_gaussian_YX_prh"].append(binner(
                     curvedsky.alm2cl(kappa_YX_prh_gaussian)
                 ))              
+                cl_dict["kk_gaussian_XYYX_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_XY_prh_gaussian, kappa_YX_prh_gaussian)
+                ))
                 cl_dict["kk_gaussian_sym_prh"].append(binner(
                     curvedsky.alm2cl(kappa_sym_prh_gaussian)
                 ))
-
-
 
         #rank 0 collects and plots
         if rank==0:
@@ -337,11 +375,16 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
             if do_prh:
                 N0_XYXY_prh = binner(sym_setup["N0_XYXY_phi_prh"][0] * (L*(L+1)/2)**2)
                 N0_YXYX_prh = binner(sym_setup["N0_YXYX_phi_prh"][0] * (L*(L+1)/2)**2)
+                N0_XYYX_prh = binner(sym_setup["N0_XYYX_phi_prh"][0] * (L*(L+1)/2)**2)
                 N0_sym_prh = binner(sym_setup["N0_sym_phi_prh"][0] * (L*(L+1)/2)**2)
                 cl_dict["N0_XYXY_prh"] = N0_XYXY_prh
                 cl_dict["N0_YXYX_prh"] = N0_YXYX_prh
+                cl_dict["N0_XYYX_prh"] = N0_XYYX_prh
                 cl_dict["N0_sym_prh"] = N0_sym_prh
-                
+                cl_dict["N0_XXXX_asym_prh"] = binner(
+                    sym_setup_XX["N0_XYXY_phi_prh"][0] * (L*(L+1)/2)**2)
+                cl_dict["N0_XXXX_prh"] = binner(
+                    recon_setup["N0_phi_prh"][0] * (L*(L+1)/2)**2)
                 
             with open(opj(outdir,"cls.pkl"), 'wb') as f:
                 pickle.dump(cl_dict, f)
@@ -394,6 +437,16 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
             #fig.savefig(opj(outdir, "clkxinput_fracdiff.png"), dpi=200)
             fig.savefig(filename, dpi=200)
 
+        def plot_cl_kk_ratio(cl_kks1, cl_kks2, filename, ylim=None):
+            cl_kk_ratio_mean = (cl_kks1 / cl_kks2).mean(axis=0)
+            fig,ax=plt.subplots(figsize=(5,4))
+            ax.errorbar(ell_mids, cl_kk_ratio_mean)
+            ax.set_title("cl_kk ratio")
+            ax.set_xlabel("$L$")
+            fig.tight_layout()
+            fig.savefig(filename, dpi=150)
+            
+            
         def plot_N0(N0s_theory, N0s_sim,
                     labels, filename):
 
@@ -434,6 +487,8 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
                      cl_dict["kxi_YX_prh"], cl_dict["kxi_sym_prh"],
                      opj(outdir, "clkxinput_prh_fracdiff.png"),
                      ylim=[-0.2,0.2])
+            plot_cl_kk_ratio(cl_dict["kk_XX_asym_prh"], cl_dict["kk_XX_prh"],
+                             opj(outdir, "clkk_XX_asym_test.png"))
 
         #Now N0s
         L = cl_dict["ells"]
@@ -456,10 +511,12 @@ def test_signal(nsim=10, use_mpi=False, from_pkl=False,
 
         if do_prh:
             print(cl_dict["N0_XYXY_prh"].shape, cl_dict["N0_sym_prh"].shape)
-            N0s_theory = [cl_dict["N0_XYXY_prh"], cl_dict["N0_sym_prh"]]
+            N0s_theory = [cl_dict["N0_XYXY_prh"], cl_dict["N0_XYYX_prh"],
+                          cl_dict["N0_YXYX_prh"], cl_dict["N0_sym_prh"]]
             N0s_sim = [cl_dict[key] for key in
-                       ["kk_gaussian_XY_prh", "kk_gaussian_sym_prh"]]
-            labels=["XYXY", "sym"]
+                       ["kk_gaussian_XY_prh", "kk_gaussian_XYYX_prh",
+                        "kk_gaussian_YX_prh", "kk_gaussian_sym_prh"]]
+            labels=["XYXY", "XYYX", "YXYX", "sym"]
             filename = opj(outdir, "N0_fracdiff_prh.png")
             plot_N0(N0s_theory, N0s_sim,
                         labels, filename)
@@ -693,7 +750,7 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
             L = np.arange(mlmax+1)
             N0_XYXY = binner(sym_setup["N0_XYXY_phi"][0] * (L*(L+1)/2)**2)
             N0_YXYX = binner(sym_setup["N0_YXYX_phi"][0] * (L*(L+1)/2)**2)
-            N0_sym = binner((1./sym_setup["w_sum_g"]) * (L*(L+1)/2)**2)
+            N0_sym = binner((sym_setup["N0_sym_phi"][0]) * (L*(L+1)/2)**2)
             cl_dict["N0_XYXY"] = N0_XYXY
             cl_dict["N0_YXYX"] = N0_YXYX
             cl_dict["N0_sym"] = N0_sym
@@ -1488,8 +1545,8 @@ if __name__=="__main__":
     parser.add_argument("-n", "--nsim", type=int, default=10)
     args = parser.parse_args()
 
+    test_N0(use_mpi=args.mpi, nsim=args.nsim, from_pkl=args.from_pkl)
     test_signal(nsim=args.nsim, use_mpi=args.mpi, from_pkl=args.from_pkl,
-                do_qe=False, do_psh=False, do_prh=True)
-    #test_N0(use_mpi=args.mpi, nsim=args.nsim, from_pkl=args.from_pkl)
+                do_qe=True, do_psh=True, do_prh=True)
     #test_secondary(use_mpi=args.mpi, nsim=args.nsim, from_pkl=args.from_pkl)
     #plot_secondary_terms()
