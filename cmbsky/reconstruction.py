@@ -1879,7 +1879,8 @@ def test_sym_signal(nsim=10, use_mpi=False, from_pkl=False):
         fig.savefig(opj(outdir, "N0.png"), dpi=200)
 
 
-def test_N0(use_mpi=False, nsim=10, from_pkl=False):
+def test_N0(use_mpi=False, nsim=10, from_pkl=False,
+            do_psh=True, do_prh=True):
     if use_mpi:
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
@@ -1970,6 +1971,40 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
                    "fgfg_sym" : []
         }
 
+        if do_psh:
+            qfunc_XY_psh = sym_setup["qfunc_XY_psh"]
+            qfunc_YX_psh = sym_setup["qfunc_YX_psh"]
+            qfunc_sym_psh = sym_setup["qfunc_sym_psh"]
+            
+            N0_tri_phi_XY_psh = sym_setup["get_fg_trispectrum_N0_XYXY_psh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            N0_tri_phi_YX_psh = sym_setup["get_fg_trispectrum_N0_YXYX_psh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            N0_tri_phi_XYYX_psh = sym_setup["get_fg_trispectrum_N0_XYYX_psh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            N0_tri_phi_sym_psh = sym_setup["get_fg_trispectrum_N0_sym_psh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            for key in cl_dict:
+                cl_dict[key+"_psh"] = []
+
+        if do_prh:
+            qfunc_XY_prh = sym_setup["qfunc_XY_prh"]
+            qfunc_YX_prh = sym_setup["qfunc_YX_prh"]
+            qfunc_sym_prh = sym_setup["qfunc_sym_prh"]
+            
+            N0_tri_phi_XY_prh = sym_setup["get_fg_trispectrum_N0_XYXY_prh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            N0_tri_phi_YX_prh = sym_setup["get_fg_trispectrum_N0_YXYX_prh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            N0_tri_phi_XYYX_prh = sym_setup["get_fg_trispectrum_N0_XYYX_prh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            N0_tri_phi_sym_prh = sym_setup["get_fg_trispectrum_N0_sym_prh"](
+                cl_fg_X, cl_fg_Y, cl_fg_XY)
+            for key in cl_dict:
+                if "psh" in key:
+                    continue
+                cl_dict[key+"_prh"] = []
+        
         for isim in range(nsim):
             if isim%size != rank:
                 continue
@@ -2037,6 +2072,100 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
                 curvedsky.alm2cl(kappa_fg_sym)
             ))
 
+            if do_psh:
+                print("running psh phi estimators")
+                phi_XY_psh = qfunc_XY_psh(X_filtered, Y_filtered)
+                phi_YX_psh = qfunc_YX_psh(X_filtered, Y_filtered)
+                phi_sym_psh = qfunc_sym_psh(
+                    None, None, phi_XY=phi_XY_psh, phi_YX=phi_YX_psh)
+
+                kappa_XY_psh = lensing.phi_to_kappa(phi_XY_psh[0])
+                kappa_YX_psh = lensing.phi_to_kappa(phi_YX_psh[0])
+                kappa_sym_psh = lensing.phi_to_kappa(phi_sym_psh[0])
+
+                #run on foreground sim to test trispectrum N0
+                phi_fg_XY_psh = qfunc_XY_psh(fg_X_filtered, fg_Y_filtered)
+                phi_fg_YX_psh = qfunc_YX_psh(fg_X_filtered, fg_Y_filtered)
+                phi_fg_sym_psh = qfunc_sym_psh(
+                    None, None, phi_XY=phi_fg_XY_psh, phi_YX=phi_fg_YX_psh)
+
+                kappa_fg_XY_psh = lensing.phi_to_kappa(phi_fg_XY_psh[0])
+                kappa_fg_YX_psh = lensing.phi_to_kappa(phi_fg_YX_psh[0])
+                kappa_fg_sym_psh = lensing.phi_to_kappa(phi_fg_sym_psh[0])
+
+                #get cls
+                cl_dict["kk_XY_psh"].append(binner(
+                    curvedsky.alm2cl(kappa_XY_psh)
+                ))
+                cl_dict["kk_YX_psh"].append(binner(
+                    curvedsky.alm2cl(kappa_YX_psh)
+                ))
+                cl_dict["kk_sym_psh"].append(binner(
+                    curvedsky.alm2cl(kappa_sym_psh)
+                ))
+
+                cl_dict["fgfg_XY_psh"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_XY_psh)
+                ))
+                cl_dict["fgfg_YX_psh"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_YX_psh)
+                ))
+                cl_dict["fgfg_XYYX"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_XY_psh,
+                                     kappa_fg_YX_psh)
+                ))
+                cl_dict["fgfg_sym_psh"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_sym_psh)
+                ))
+
+
+            if do_prh:
+                print("running prh phi estimators")
+                phi_XY_prh = qfunc_XY_prh(X_filtered, Y_filtered)
+                phi_YX_prh = qfunc_YX_prh(X_filtered, Y_filtered)
+                phi_sym_prh = qfunc_sym_prh(
+                    None, None, phi_XY=phi_XY_prh, phi_YX=phi_YX_prh)
+
+                kappa_XY_prh = lensing.phi_to_kappa(phi_XY_prh[0])
+                kappa_YX_prh = lensing.phi_to_kappa(phi_YX_prh[0])
+                kappa_sym_prh = lensing.phi_to_kappa(phi_sym_prh[0])
+
+                #run on foreground sim to test trispectrum N0
+                phi_fg_XY_prh = qfunc_XY_prh(fg_X_filtered, fg_Y_filtered)
+                phi_fg_YX_prh = qfunc_YX_prh(fg_X_filtered, fg_Y_filtered)
+                phi_fg_sym_prh = qfunc_sym_prh(
+                    None, None, phi_XY=phi_fg_XY_prh, phi_YX=phi_fg_YX_prh)
+
+                kappa_fg_XY_prh = lensing.phi_to_kappa(phi_fg_XY_prh[0])
+                kappa_fg_YX_prh = lensing.phi_to_kappa(phi_fg_YX_prh[0])
+                kappa_fg_sym_prh = lensing.phi_to_kappa(phi_fg_sym_prh[0])
+
+                #get cls
+                cl_dict["kk_XY_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_XY_prh)
+                ))
+                cl_dict["kk_YX_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_YX_prh)
+                ))
+                cl_dict["kk_sym_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_sym_prh)
+                ))
+
+                cl_dict["fgfg_XY_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_XY_prh)
+                ))
+                cl_dict["fgfg_YX_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_YX_prh)
+                ))
+                cl_dict["fgfg_XYYX"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_XY_prh,
+                                     kappa_fg_YX_prh)
+                ))
+                cl_dict["fgfg_sym_prh"].append(binner(
+                    curvedsky.alm2cl(kappa_fg_sym_prh)
+                ))
+
+                
         #rank 0 collects and plots
         if rank==0:
             #collect and plot
@@ -2057,12 +2186,9 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
             cl_dict["nbin"] = binner.nbin
             #and N0s
             L = np.arange(mlmax+1)
-            N0_XYXY = binner(sym_setup["N0_XYXY_phi"][0] * (L*(L+1)/2)**2)
-            N0_YXYX = binner(sym_setup["N0_YXYX_phi"][0] * (L*(L+1)/2)**2)
-            N0_sym = binner((1./sym_setup["w_sum_g"]) * (L*(L+1)/2)**2)
-            cl_dict["N0_XYXY"] = N0_XYXY
-            cl_dict["N0_YXYX"] = N0_YXYX
-            cl_dict["N0_sym"] = N0_sym
+            cl_dict["N0_XYXY"] = binner(sym_setup["N0_XYXY_phi"][0] * (L*(L+1)/2)**2)
+            cl_dict["N0_YXYX"] = binner(sym_setup["N0_YXYX_phi"][0] * (L*(L+1)/2)**2)
+            cl_dict["N0_sym"] = binner(sym_setup["N0_sym_phi"] * (L*(L+1)/2)**2)
 
             #trispectrum N0
             cl_dict["N0_fg_XYXY"] = binner(
@@ -2073,7 +2199,22 @@ def test_N0(use_mpi=False, nsim=10, from_pkl=False):
                 N0_tri_phi_XYYX[0] * (L*(L+1)/2)**2)
             cl_dict["N0_fg_sym"] = binner(
                 N0_tri_phi_sym[0] * (L*(L+1)/2)**2)
-                
+
+            if do_psh:
+                cl_dict["N0_XYXY_psh"] = binner(sym_setup["N0_XYXY_phi_psh"][0] * (L*(L+1)/2)**2)
+                cl_dict["N0_YXYX_psh"] = binner(sym_setup["N0_YXYX_phi_psh"][0] * (L*(L+1)/2)**2)
+                cl_dict["N0_sym_psh"] = binner(sym_setup["N0_sym_phi_psh"] * (L*(L+1)/2)**2)
+
+                #trispectrum N0
+                cl_dict["N0_fg_XYXY"] = binner(
+                    N0_tri_phi_XY[0] * (L*(L+1)/2)**2)
+                cl_dict["N0_fg_YXYX"] = binner(
+                    N0_tri_phi_YX[0] * (L*(L+1)/2)**2)
+                cl_dict["N0_fg_XYYX"] = binner(
+                    N0_tri_phi_XYYX[0] * (L*(L+1)/2)**2)
+                cl_dict["N0_fg_sym"] = binner(
+                    N0_tri_phi_sym[0] * (L*(L+1)/2)**2)
+            
             with open(opj(outdir,"cls_N0.pkl"), 'wb') as f:
                 pickle.dump(cl_dict, f)
         else:
@@ -2769,7 +2910,7 @@ def test_sym_secondary(use_mpi=False, nsim=10, from_pkl=False):
             cl_dict["S_YX_raw"].append(binner(curvedsky.alm2cl(
                 kappa_YX)))
             cl_dict["S_sym_raw"].append(binner(curvedsky.alm2cl(
-		kappa_sym)))
+                kappa_sym)))
             
             #we need the same for Gaussian sims
             phi_cmb_f2_XY_gaussian = qfunc_XY(cmb_gaussian_alm, fg_alm_Y)
