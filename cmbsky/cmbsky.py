@@ -5,19 +5,47 @@ import numpy as np
 import healpy as hp
 from pixell import curvedsky
 from orphics import maps,io,cosmology,stats,pixcov
-from pixell import enmap,curvedsky,utils,enplot,lensing
+from pixell import enmap, curvedsky, utils, enplot, lensing, reproject
 from falafel import utils as futils
 from falafel.utils import change_alm_lmax
 import astropy.io.fits as afits
 import h5py
 from astropy.cosmology import FlatLambdaCDM, z_at_value
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 import astropy.units as units
 
 CONVERSION_FACTORS = {"CIB" : 
-                      {"0093" : 4.6831e3, "0100" : 4.1877e3, "0145" : 2.6320e3, "0353" : 3.3710e3, "0545" : 1.7508e4},
+                      {"0093" : 4.6831e3, "0100" : 4.1877e3, "0145" : 2.6320e3, "0217": 2.06767e3, "0225" : 2.0716e3, "0353" : 3.3710e3, "0545" : 1.7508e4},
                       "Y" : 
-                      {"0093" : -4.2840e6, "0100": -4.1103e6, "0145" : -2.8355e6, "0353" : 6.1071e6, "0545" : 1.5257e7},
+                      {"0093" : -4.2840e6, "0100": -4.1103e6, "0145" : -2.8355e6, "0217" : -2.1188e4, "0353" : 6.1071e6, "0545" : 1.5257e7},
 }
+
+h=6.62607004e-34
+c=2.99792458e8
+kb = 1.38064852e-23
+T_cmb=2.7255
+
+def y_to_deltaToverT(freq_Ghz):
+    x = float(freq_Ghz)/56.8
+    return T_cmb * (x * (np.exp(x)+1)/(np.exp(x)-1) - 4) * 1e6
+    
+def response_fnc_tsz(qid,lmax=None):
+    return y_to_deltaToverT(float(qid))/y_to_deltaToverT(145.)
+
+
+def cib_sed(freq, lmax=None, beta=1.2, T_cib=24.):
+    freq = float(freq)*1.e9
+    x = h*freq / kb / T_cmb
+    #print(x)
+    dBdT = 2*h * freq**3 * x * np.exp(x) / c**2 / T_cmb / (np.exp(x)-1)**2
+    #print(dBdT)
+    x_cib = h*freq / kb / T_cib
+    #print(x_cib)
+    return freq**(3+beta) / (np.exp(x_cib) - 1) / dBdT
+
+def response_fnc_cib(qid, lmax=None):
+    return cib_sed(qid)/cib_sed(145.)
 
 class ClBinner(object):
     def __init__(self, lmin=10, lmax=300, nbin=20):
@@ -85,29 +113,126 @@ class CMBSky(object):
                 )
         return hp.fitsfunc.read_alm(f)
         
-    def get_nemo_source_mask(self, nemo_file,
-                             mask_radius,
-                             snr_min=None):
+    def get_nemo_source_mask(
+            self, nemo_file, mask_radius,
+            snr_min=None, rot=None,
+            lowz_template_labels=[
+                "Arnaud_M1e14_z0p2","Arnaud_M2e14_z0p2","Arnaud_M4e14_z0p2","Arnaud_M8e14_z0p2"],
+            lowz_mask_radius=None, true_zmax=None,
+            hack_dr6_large_mask_numbers=False):
+        """
+        rot: list of 3 floats
+            If we're producing a rotated sky,
+            the nemo catalog provided here is 
+            presumnably in that rotated coordinated
+            system. Here though, we're still working 
+            in the original coordinate system, so we'll
+            apply the inverse rotation to the nemo catalog
+            to mask the map.
+        """
         nemo_data = afits.open(nemo_file)[1].data
 
         #cut on snr
         if snr_min is not None:
             use = nemo_data['SNR']>=snr_min
             nemo_data = nemo_data[use]
-        print("masking %d nemo sources"%len(nemo_data))
+            print("masking %d snr>%.2f nemo sources from catalog %s"%(len(nemo_data), snr_min, nemo_file))
+        else:
+            print("masking %d nemo sources from catalog %s"%(len(nemo_data), nemo_file))
         
         ra_deg, dec_deg = nemo_data['RADeg'], nemo_data['decDeg']
         dec,ra = np.radians(dec_deg),np.radians(ra_deg)
+
+        #If we are generating a rotated sky, we assume
+        #that the nemo catalog provided is in that rotated frame.
+        #Here though, we are working in the original frame, so
+        #we need apply the inverse rotation to the nemo catalog
+        if rot is not None:
+            print("applying inverse rotation to nemo catalog coordinates")
+            r = hp.rotator.Rotator(rot=rot, deg=False)
+            theta,phi = np.pi/2 - dec, ra
+            theta_rot, phi_rot = r(theta, phi, inv=True)
+            dec, ra = np.pi/2 - theta_rot, phi_rot
 
         r = mask_radius*utils.arcmin
 
         srcs = np.array([dec, ra])
         mask = (enmap.distance_from_healpix(
             self.nside, srcs, rmax=r) >= r)
-
         print("nemo masking %d/%d pixels (f_sky = %.2f) in fgs"%(
             (~mask).sum(),len(mask),
             float((~mask).sum())/len(mask)))
+
+        if lowz_mask_radius is not None:
+            #get low z sources
+            is_lowz = np.zeros(len(nemo_data), dtype=bool)
+            if hack_dr6_large_mask_numbers:
+                print("hacking dr6 large mask numbers")
+                #mask 40 brightest z<0.1 clusters
+                #mask 435-40 random z=0.2 template candidates
+                #match to halo catalog
+                #self.load_halo_catalog(zmax=true_zmax)
+                halodata = self.halodata
+                halodata_use = self.halodata[self.halodata['redshift'] < true_zmax]
+                cat_halo = SkyCoord(ra=halodata_use["ra"]*u.degree, 
+                                        dec=halodata_use["dec"]*u.degree)
+                cat_nemo = SkyCoord(ra=nemo_data['RADeg']*u.degree, 
+                                     dec=nemo_data['decDeg']*u.degree)
+                halo_ind, d2d, _ = cat_nemo.match_to_catalog_sky(cat_halo)
+                sepmax=2.5/60 * u.degree # 2.5 arcmin
+                has_match = d2d <= sepmax
+                print("%d/%d nemo clusters have match to z<0.1 halos"%(
+                    has_match.sum(), len(has_match)))
+                is_lowz = has_match
+                nemo_snr = nemo_data['SNR']
+                
+                #just keep 40 brightest of these
+                snr_thresh = -np.sort(-nemo_snr[is_lowz])[40]
+                is_lowz *= nemo_snr>snr_thresh
+                print("selected %d brightest lowz clusters"%is_lowz.sum())
+                print("snrs",nemo_snr[is_lowz])
+
+                #also keep 395 z=0.2 template candidates
+                is_lowz_template = np.zeros(len(nemo_data), dtype=bool)
+                for template in lowz_template_labels:
+                    is_lowz_template[np.where(nemo_data["template"] == template)[0]] = True
+                #remove confirmed 40
+                is_lowz_template[is_lowz] = False
+                #randomly choose 395 remaining ones
+                is_lowz_template_inds, = np.where(is_lowz_template)
+                is_lowz_template_inds_choose = np.random.choice(is_lowz_template_inds, 395,
+                                                                replace=False)
+                is_lowz[is_lowz_template_inds_choose] = True
+                print("%d lowz after random templates step"%is_lowz.sum())
+                
+            elif true_zmax is not None:
+                #match to halo catalog
+                halodata = self.halodata
+                halodata_use = self.halodata[self.halodata['redshift'] < true_zmax]
+                cat_halo = SkyCoord(ra=halodata_use["ra"]*u.degree, 
+                                        dec=halodata_use["dec"]*u.degree)
+                cat_nemo = SkyCoord(ra=nemo_data['RADeg']*u.degree, 
+                                     dec=nemo_data['decDeg']*u.degree)
+                halo_ind, d2d, _ = cat_nemo.match_to_catalog_sky(cat_halo)
+                sepmax=2.5/60 * u.degree # 2.5 arcmin
+                has_match = d2d <= sepmax
+                print("%d/%d nemo clusters have match to z<0.1 halos"%(
+                    has_match.sum(), len(has_match)))
+                is_lowz = has_match
+
+            else:
+                for template in lowz_template_labels:
+                    is_lowz[np.where(nemo_data["template"] == template)[0]] = True
+            print("masking %d low z clusters with radius %.2f arcmin"%(is_lowz.sum(), lowz_mask_radius))
+            lowz_srcs = np.array([dec[is_lowz], ra[is_lowz]])
+            r_lowz = lowz_mask_radius * utils.arcmin
+            lowz_mask = (enmap.distance_from_healpix(
+                self.nside, lowz_srcs, rmax=r_lowz) >= r_lowz)
+            print("low-z nemo masking %d/%d pixels (f_sky = %.2f) in fgs"%(
+                (~lowz_mask).sum(),len(lowz_mask),
+                float((~lowz_mask).sum())/len(lowz_mask)))
+            mask *= lowz_mask
+        
         return mask
 
     def get_flux_mask(self, flux_density_map, flux_cut):
@@ -140,7 +265,9 @@ class CMBSky(object):
                     cib_flux_cut=None, flux_cut_freq=None,
                     radiops_flux_cut=None, nemo_mask_fgs=False,
                     nemo_catalog=None, nemo_snr_min=None,
-                    nemo_mask_radius=10.,
+                    nemo_mask_radius=None, nemo_lowz_mask_radius=None,
+                    rot=None, true_zmax=None,
+                    hack_dr6_large_mask_numbers=False
                  ):
         """
         Somewhat confusing uberfunction for getting 
@@ -213,10 +340,24 @@ class CMBSky(object):
                 fg_mask *= ps_flux_mask
                                          
         if nemo_mask_fgs:
-            nemo_mask = self.get_nemo_source_mask(
-                nemo_catalog, nemo_mask_radius,
-                snr_min=nemo_snr_min)
-            fg_mask *= nemo_mask
+            if not isinstance(nemo_catalog, list):
+                nemo_catalog = [nemo_catalog]
+                assert not isinstance(nemo_snr_min, list)
+                assert not isinstance(nemo_mask_radius, list)
+                nemo_snr_min = [nemo_snr_min]
+                nemo_mask_radius = [nemo_mask_radius]
+            else:
+                assert isinstance(nemo_snr_min, list)
+                assert isinstance(nemo_mask_radius, list)
+            for cat, snr, rad in zip(nemo_catalog, nemo_snr_min, nemo_mask_radius):
+                nemo_mask = self.get_nemo_source_mask(
+                    cat, rad,
+                    snr_min=snr,
+                    rot=rot, lowz_mask_radius=nemo_lowz_mask_radius,
+                    true_zmax=true_zmax,
+                    hack_dr6_large_mask_numbers=hack_dr6_large_mask_numbers)
+                fg_mask *= nemo_mask
+                    
             
         n = len(fg_mask)
         print("in total masks %d/%d pixels (=f_sky %.2e)"%(
@@ -224,23 +365,55 @@ class CMBSky(object):
         ))
         return fg_mask                 
 
+    def get_rksz_temp(self):
+        return hp.read_map(
+            opj(self.data_dir,
+                "4e3_2048_50_50_ksz.fits"
+                ))
+    
     def get_sky(self, freq, cmb=True, cib=False, tsz=False,
-                ksz=False, radiops=False, cmb_unlensed_alms=None,
-                cmb_alms=None, lmax=4000, fg_model_alms=None,
+                ksz=False, rksz=False, radiops=False, allfg=False,
+                cmb_unlensed_alms=None,
+                cmb_alms=None, lmax=4000,
                 fg_mask=None, mean_fill_fgs=True,
-                fg_model_map=None, fg_model_map_beam=None,
-                survey_mask_hpix=None):
+                fg_model_map=None, bl=None,
+                survey_mask_hpix=None, mask_beamed_map=False,
+                source_flux_cut=None, flux_cut_freq=None):
 
+        if flux_cut_freq is None:
+            flux_cut_freq=freq
         outputs = {}
         fg_map = np.zeros(hp.nside2npix(self.nside))
+        has_fgs = False
         if fg_mask is None:
             fg_mask = np.ones_like(fg_map, dtype=bool)
+
+        if allfg:
+            print("doing allfg")
+            allfg_temp = self.get_allfg_temp(freq)
+            if source_flux_cut is not None:
+                print("cutting allfg flux > %.2f mJY at %s GHz"%(source_flux_cut, flux_cut_freq))
+                flux_density_MJy = allfg_temp / get_cib_conversion_factor(freq)
+                flux_mask = self.get_flux_mask(
+                    flux_density_MJy, source_flux_cut)
+                allfg_temp[~flux_mask] = (allfg_temp[flux_mask]).mean()
+            fg_map += allfg_temp
+            has_fgs = True
+            
         if cib:
             cib_temp = self.get_cib_temp(freq)
+            if source_flux_cut is not None:
+                print("cutting cib flux > %.2f mJY at %s GHz"%(source_flux_cut, flux_cut_freq))
+                cib_flux_mask = self.get_cib_flux_mask(flux_cut_freq, source_flux_cut)
+                cib_temp[~cib_flux_mask] = (cib_temp[cib_flux_mask]).mean()
             fg_map += cib_temp
             has_fgs = True
         if radiops:
             ps_temp = self.get_radio_ps_temp(freq)
+            if source_flux_cut is not None:
+                print("cutting radio source flux > %.2f mJY at %s GHz"%(source_flux_cut, flux_cut_freq))
+                ps_flux_mask = self.get_radio_ps_flux_mask(flux_cut_freq, source_flux_cut)
+                ps_temp *= ps_flux_mask
             fg_map += ps_temp
             has_fgs = True
 
@@ -254,27 +427,87 @@ class CMBSky(object):
             fg_map += ksz_temp
             has_fgs = True
 
-        if survey_mask_hpix is not None:
-            fg_map *= survey_mask_hpix
-            #also calculate w factors
-            outputs["w1"] = (survey_mask_hpix).mean()
-            outputs["w2"] = (survey_mask_hpix**2).mean()
-            outputs["w4"] = (survey_mask_hpix**4).mean()
-            print("applied survey mask with fsky:",outputs["w1"])
-            
-        #if we've done some fg masking,
-        #make the masked map and alms
-        if not np.all(fg_mask == True):
-            if mean_fill_fgs:
-                fg_map_masked = fg_map.copy()
-                mask_inds = np.where(~fg_mask)[0]
-                fg_map_masked[mask_inds] = (fg_map[fg_mask]).mean()
-            else:
-                fg_map_masked = fg_map * fg_mask.astype(int)
-            fg_masked_alms = hp.map2alm(fg_map_masked, lmax=lmax)
-            outputs["fg_masked_alms"] = fg_masked_alms
-            outputs["fg_mask"] = fg_mask
+        if rksz:
+            rksz_temp = self.get_rksz_temp()
+            fg_map += rksz_temp
+            has_fgs = True
 
+        if mask_beamed_map:
+            if ((fg_model_map is None) and (survey_mask_hpix is None) and (np.all(fg_mask==1))):
+                fg_alms = hp.map2alm(fg_map, lmax=lmax)
+            else:
+                print("masking beamed map")
+                print("applying beam")
+                mlmax=3*self.nside-1
+                fg_alm = hp.map2alm(fg_map, lmax=mlmax)
+                fg_alm_beamed = curvedsky.almxfl(fg_alm, bl[:mlmax+1])
+                fg_map_beamed = hp.alm2map(fg_alm_beamed, self.nside)
+
+                if fg_model_map is not None:
+                    print("subtracting fg_model_map")
+                    fg_model_map_hpix = reproject.map2healpix(fg_model_map,
+                                                              nside=self.nside)
+                    fg_map_beamed -= fg_model_map_hpix
+
+                if fg_mask is not None:
+                    if survey_mask_hpix is not None:
+                        total_mask=fg_mask*(survey_mask_hpix>0.1)
+                    else:
+                        total_mask=fg_mask
+                    print("applying fg_mask")
+                    mean_val = (fg_map_beamed[total_mask]).mean()
+                    print("mean filling map with value:", mean_val)
+                    print("median =", np.median(fg_map_beamed[total_mask]))
+                    fg_map_beamed[~fg_mask] = mean_val
+
+                if survey_mask_hpix is not None:
+                    print("applying survey_mask_hpix")
+                    fg_map_beamed *= survey_mask_hpix
+                    #also calculate w factors
+                    outputs["w1"] = (survey_mask_hpix).mean()
+                    outputs["w2"] = (survey_mask_hpix**2).mean()
+                    outputs["w4"] = (survey_mask_hpix**4).mean()
+                    print("applied survey mask with fsky:",outputs["w1"])
+                    
+                outputs["fg_map_beamed"] = fg_map_beamed
+                fg_alms = curvedsky.almxfl(
+                    hp.map2alm(fg_map_beamed, lmax=lmax),
+                    1./bl[:lmax+1]
+                    )
+                fg_map = hp.alm2map(fg_alms, self.nside)
+        else:
+            if survey_mask_hpix is not None:
+                fg_map *= survey_mask_hpix
+                #also calculate w factors
+                outputs["w1"] = (survey_mask_hpix).mean()
+                outputs["w2"] = (survey_mask_hpix**2).mean()
+                outputs["w4"] = (survey_mask_hpix**4).mean()
+                print("applied survey mask with fsky:",outputs["w1"])
+
+            #if we've done some fg masking,
+            #make the masked map and alms
+            if not np.all(fg_mask == True):
+                if mean_fill_fgs:
+                    fg_map_masked = fg_map.copy()
+                    mask_inds = np.where(~fg_mask)[0]
+                    fg_map_fill_value = (fg_map[fg_mask]).mean()
+                    fg_map_masked[mask_inds] = fg_map_fill_value
+                    outputs["fg_map_fill_value"] = fg_map_fill_value
+                else:
+                    fg_map_masked = fg_map * fg_mask.astype(int)
+                    outputs["fg_map_fill_value"] = 0.
+                    print("fg_map_masked.dtype, survey_mask_hpix.dtype:")
+                    print(fg_map_masked.dtype, survey_mask_hpix.dtype)
+                    fg_map_masked *= survey_mask_hpix
+                fg_alms = hp.map2alm(fg_map_masked, lmax=lmax)
+                #outputs["fg_masked_alms"] = fg_masked_alms
+                outputs["fg_mask"] = fg_mask
+            else:
+                fg_alms = hp.map2alm(fg_map, lmax=lmax)
+
+        outputs["fg_alms"] = fg_alms
+        outputs["fg_map_hpix"] = fg_map
+        
         if cmb:
             if cmb_alms is None:
                 if (cmb_unlensed_alms is None):
@@ -290,12 +523,13 @@ class CMBSky(object):
                         return curvedsky.almxfl(
                             alm=kappa_alm,
                             lfilter=lambda x: 1./(x*(x+1)/2))
-                    phi_alms = kappa_to_phi(kappa_alms)
+                    phi_alms = kappa_to_phi(kappa_alms).astype(np.complex64)
                     res = 0.5*utils.arcmin
                     proj='car'
                     shape, wcs = enmap.fullsky_geometry(res=res, proj=proj)
                     print("doing lensing on %s map with res %f"%(
                         proj, res/utils.arcmin))
+                    print(shape, wcs, phi_alms.dtype, cmb_unlensed_alms[0].dtype)
                     t_lensed = lensing.lens_map_curved(
                         shape, wcs, phi_alms,
                         cmb_unlensed_alms[0])[0]
@@ -313,25 +547,24 @@ class CMBSky(object):
             print(cmb_alms)
             total_alms += cmb_alms.astype(np.complex128)
         if has_fgs:
-            fg_alms = hp.map2alm(fg_map, lmax=lmax)
+            #fg_alms = hp.map2alm(fg_map, lmax=lmax)
             total_alms += fg_alms
+            """
             if fg_model_alms is not None:
                 fg_model_alms = change_alm_lmax(
                     fg_model_alms, lmax)
                 fg_modelsub_alms = fg_alms - fg_model_alms
                 outputs["fg_modelsub_alms"] = fg_modelsub_alms
+            """
         else:
             fg_alms = np.zeros_like(total_alms)
-
-
-
-        outputs["fg_alms"] = fg_alms
+        #outputs["fg_alms"] = fg_alms
         outputs["total_alms"] = total_alms
         outputs["cmb_alms"] = cmb_alms
         outputs["cmb_unlensed_alms"] = cmb_unlensed_alms
 
         return outputs
-
+        
     
 class SehgalSky(CMBSky):
     """
@@ -404,6 +637,12 @@ class SehgalSky(CMBSky):
                 "148_ksz_healpix_nopell_Nside4096_DeltaT_uK.fits"
                 ))
 
+    def get_rksz_temp(self):
+        return hp.read_map(
+            opj(self.data_dir,
+                "4e3_2048_50_50_ksz.fits"
+                ))
+
     def get_kappa_alms(self, lmax):
         kappa_alms = hp.fitsfunc.read_alm(
             opj(self.data_dir, "healpix_4096_KappaeffLSStoCMBfullsky_almlmax6000.fits")
@@ -411,7 +650,7 @@ class SehgalSky(CMBSky):
         kappa_alms = futils.change_alm_lmax(kappa_alms, lmax)
         return kappa_alms
 
-    def load_halo_catalog(self, mmin=0., cols=None):
+    def load_halo_catalog(self, mmin=0., cols=None, zmax=None):
         """
         load the halo catalog
         """
@@ -421,6 +660,9 @@ class SehgalSky(CMBSky):
         print("read %d halos"%halodata.shape[1])
         m_200 = halodata[12]
         use = m_200>mmin
+        redshift = halodata[0]
+        if zmax is not None:
+            use *= (redshift <= zmax)
         halodata = halodata[:,use]
         num_halo = len(halodata[0])
 
@@ -469,6 +711,9 @@ class SehgalSky(CMBSky):
 
         self.load_halo_catalog()
         use = self.halodata[mass_col] > mmin
+        if zmax is not None:
+            use *= self.halodata['redshift']<zmax
+            
         halodata = self.halodata[use]
         num_halo = len(halodata)
 
@@ -494,7 +739,7 @@ class SehgalSky(CMBSky):
 
         """
         lensed_cmb = hp.read_map(
-                opj("/global/project/projectdirs/act/data/maccrann/sehgal",
+                opj("/global/cfs/projectdirs/act/data/maccrann/sehgal",
                     "Sehgalsimparams_healpix_4096_KappaeffLSStoCMBfullsky_phi_SimLens_Tsynfastnopell_fast_lmax8000_nside4096_interp2.5_method1_1_lensed_map.fits")
             )
         if survey_mask_hpix is not None:
@@ -508,7 +753,7 @@ class Sehgal10Sky(SehgalSky):
                  rescale_cib=True,
                  rescale_tsz=True):
         super(Sehgal10Sky, self).__init__(data_dir)
-        self.nside=8192
+        self.nside=4096
         self.rescale_cib = rescale_cib
         self.rescale_tsz = rescale_tsz
         self.data_dir = data_dir
@@ -518,11 +763,19 @@ class Sehgal10Sky(SehgalSky):
         
     def get_cib_temp(self, freq,
                      rescale_cib=None):
+
+        if int(freq)==545:
+            print("hacking by 545GHz cib for Sehgal by rescaling 350GHz")
+            t_350 = self.get_cib_temp(350., rescale_cib=rescale_cib)
+            t_545 = t_350 * cib_sed(545.) / cib_sed(350.)
+            return t_545
+
         if rescale_cib is None:
             rescale_cib = self.rescale_cib
         filename = opj(self.data_dir,
                        "%03d_ir_pts_healpix.fits"%int(freq)
                        )
+        print("reading cib from %s"%filename)
         m_Jysr = hp.read_map(filename) #this is in Jy/sr
         #convert to MJy/sr
         m_MJysr = m_Jysr / 1.e6
@@ -530,7 +783,7 @@ class Sehgal10Sky(SehgalSky):
         m = m_MJysr * get_cib_conversion_factor(freq)
         if rescale_cib:
             m *= 0.75
-        return m
+        return hp.ud_grade(m, self.nside)
     
     def get_cib_flux_mask(self, freq, flux_cut,
                           rescale_cib=None):
@@ -547,20 +800,32 @@ class Sehgal10Sky(SehgalSky):
 
     def get_radio_ps_temp(self, freq,
                           ):
+        if int(freq)==545:
+            print("hacking radio-ps at 545 by returning zero map!")
+            return np.zeros(hp.nside2npix(self.nside))
         filename = opj(
             self.data_dir,
             "%03d_rad_pts_healpix.fits"%int(freq)
             )
+        print("reading radio ps from %s"%filename)
         m_Jysr = hp.read_map(filename)
         m_MJysr = m_Jysr / 1.e6
         m = m_MJysr * get_cib_conversion_factor(freq)
-        return m
+        return hp.ud_grade(m, self.nside)
 
 
     
     def get_tsz_temp(self, freq, use_orig_maps=None,
                     rescale_tsz=None):
         """frequency in GHz"""
+
+        if int(freq)==545:
+            print("rescaling 350 map for 545 tsz")
+            tsz_350 = self.get_tsz_temp(
+                350., use_orig_maps=use_orig_maps,
+                rescale_tsz=rescale_tsz)
+            tsz_545 = tsz_350 * response_fnc_tsz(545.)/response_fnc_tsz(350.)
+            return tsz_545
         
         if rescale_tsz is None:
             rescale_tsz = self.rescale_tsz
@@ -574,7 +839,7 @@ class Sehgal10Sky(SehgalSky):
         if rescale_tsz:
             tsz_map *= 0.75
         dT = (tsz_map / 1.e6) * flux_density_to_temp(freq)
-        return dT
+        return hp.ud_grade(dT, self.nside)
         """
         print("using rescaled tSZ")
         y = hp.ud_grade(hp.read_map(
@@ -594,7 +859,7 @@ class Sehgal10Sky(SehgalSky):
             opj(self.data_dir,
                 "148_ksz_healpix.fits"
                 ))
-        return ksz_flux_density_Jy * flux_density_to_temp(148.) / 1.e6
+        return hp.ud_grade(ksz_flux_density_Jy * flux_density_to_temp(148.) / 1.e6, self.nside)
 
     def get_kappa_alms(self, lmax):
         kappa_alms = hp.fitsfunc.read_alm(
@@ -609,7 +874,7 @@ class Sehgal10Sky(SehgalSky):
         lensed cmb alms
         """
         lensed_cmb = hp.read_map(
-                opj("/global/project/projectdirs/act/data/maccrann/sehgal",
+                opj("/global/cfs/projectdirs/act/data/maccrann/sehgal",
                     "Sehgalsimparams_healpix_4096_KappaeffLSStoCMBfullsky_phi_SimLens_Tsynfastnopell_fast_lmax8000_nside4096_interp2.5_method1_1_lensed_map.fits")
             )
         if survey_mask_hpix is not None:
@@ -620,7 +885,35 @@ class Sehgal10Sky(SehgalSky):
         if lmax is not None:
             cmb_alms = hp.map2alm(lensed_cmb, lmax=lmax)
         return cmb_alms
-    
+
+
+class Seghal10Rot1Sky(Sehgal10Sky):
+    def __init__(self, data_dir,
+                 rescale_cib=True,
+                 rescale_tsz=True):
+        super().__init__(data_dir,
+                         rescale_cib=rescale_cib,
+                         rescale_tsz=rescale_tsz)
+
+    def get_cmb_lensed_orig_alms(self, lmax=None, survey_mask_hpix=None):
+        """
+        Get the original (i.e. packaged with the sim)
+        lensed cmb alms
+        """
+        lensed_cmb = hp.read_map(
+                opj("/global/project/projectdirs/act/data/maccrann/sehgal10_rot1",
+                    "Sehgalsimparams_healpix_4096_KappaeffLSStoCMBfullsky_phi_SimLens_Tsynfastnopell_fast_lmax8000_nside4096_interp2.5_method1_1_lensed_map.fits")
+            )
+        if survey_mask_hpix is not None:
+            print("lensed_cmb nside:", hp.pixelfunc.npix2nside(len(lensed_cmb)))
+            print("survey_mask_hpix nside:", hp.pixelfunc.npix2nside(len(survey_mask_hpix)))
+            print("survey_mask_hpix dgraded nside:", hp.pixelfunc.npix2nside(len(hp.ud_grade(survey_mask_hpix, 4096))))
+            lensed_cmb *= hp.ud_grade(survey_mask_hpix, 4096)
+        if lmax is not None:
+            cmb_alms = hp.map2alm(lensed_cmb, lmax=lmax)
+        return cmb_alms
+
+        
 class WebSky(CMBSky):
     """class for websky maps and dark matter halo catalogs
 
@@ -639,7 +932,7 @@ class WebSky(CMBSky):
                  data_dir,
                  halo_catalog_name = 'halos.pksc',
                  kappa_map_name = 'kap.fits',
-                 comptony_map_name = 'tsz.fits',
+                 comptony_map_name = 'tsz_8192.fits',
                  ksz_map_name = 'ksz.fits',
                  websky_cosmo = {'Omega_M': 0.31, 'Omega_B': 0.049, 'Omega_L': 0.69, 
                                  'h': 0.68, 'sigma_8': 0.81, 'n_s':0.965},
@@ -701,6 +994,7 @@ class WebSky(CMBSky):
             halodata = halodata[dm]
 
         # cut redshift range
+        """
         if zmin > 0 or zmax < np.inf:
             rofzmin = astropy_cosmo.comoving_distance(zmin).value
             rofzmax = astropy_cosmo.comoving_distance(zmax).value
@@ -709,15 +1003,7 @@ class WebSky(CMBSky):
 
             dm = (rpp > rofzmin) & (rpp < rofzmax) 
             halodata = halodata[dm]
-
-        Nhalo = len(halodata)
-        # get halo redshifts and put everything into a more friendly 
-        # recarray
-        dtype = [('x', np.float64), ('y', np.float64), ('z', np.float64),
-                 ('vx', np.float64), ('vy', np.float64), ('vz', np.float64),
-                 ('M', np.float64), ('redshift', np.float64),
-                 ('ra', np.float64), ('dec', np.float64)]
-        
+        """
         # set up comoving distance to redshift interpolation table
         rpp =  np.sqrt( np.sum(halodata[:,:3]**2, axis=1))
 
@@ -728,6 +1014,18 @@ class WebSky(CMBSky):
         zgrid = np.linspace(zminh, zmaxh, 10000)
         dgrid = astropy_cosmo.comoving_distance(zgrid).value
         redshift = np.interp(rpp, dgrid, zgrid)
+        redshift_use = (redshift>=zmin)*(redshift<=zmax)
+        halodata = halodata[redshift_use]
+        redshift = redshift[redshift_use]
+
+        Nhalo = len(halodata)
+        # get halo redshifts and put everything into a more friendly 
+        # recarray
+        dtype = [('x', np.float64), ('y', np.float64), ('z', np.float64),
+                 ('vx', np.float64), ('vy', np.float64), ('vz', np.float64),
+                 ('M', np.float64), ('redshift', np.float64),
+                 ('ra', np.float64), ('dec', np.float64)]
+        
         #Get halo ra/dec
         vec = np.zeros((Nhalo, 3))
         vec[:,0] = halodata[:,0]
@@ -840,7 +1138,7 @@ class WebSky(CMBSky):
             name of cib file at given frequency
         """
 
-        cib_file_name = "cib_ns4096_nu%s.fits"%self.fmt_freq(freq)
+        cib_file_name = "cib_nu%s.fits"%self.fmt_freq(freq)
         return opj(self.data_dir, cib_file_name)
 
     def kappa_map_file_name(self):
@@ -881,15 +1179,24 @@ class WebSky(CMBSky):
 
     def get_tsz_temp(self, freq):
         fn = self.comptony_map_file_name()
-        y_map = hp.read_map(fn)
-        return y_map*CONVERSION_FACTORS['Y'][self.fmt_freq(freq)]
+        y_map = hp.ud_grade(hp.read_map(fn), self.nside)
+        return y_map * y_to_deltaToverT(float(freq))
+        #return y_map*CONVERSION_FACTORS['Y'][self.fmt_freq(freq)]
 
     def get_radio_ps_map(self, freq):
         """
         Returns flux density in MJy/sr
         """
-        filename = opj(self.data_dir,
-                       "catalog_%.1f.h5"%float(freq))
+        if freq == "0278":
+            freq_use = "0275"
+        elif freq == "0225":
+            freq_use = "0217"
+        elif freq=="0039":
+            freq_use = "35.9"
+        else:
+            freq_use = freq
+        filename = opj(self.data_dir, "radiops",
+                       "catalog_%.1f.h5"%float(freq_use))
         f = h5py.File(filename, 'r')
         flux, theta, phi = f['flux'][:], f['theta'][:], f['phi'][:]
         #Flux is in Jansky according to Zack.
@@ -926,7 +1233,8 @@ class WebSky(CMBSky):
     def get_cib_temp(self, freq):
         cib_map = hp.read_map(
             self.cib_map_file_name(freq=freq))
-        return cib_map*CONVERSION_FACTORS['CIB'][self.fmt_freq(freq)]
+        #return cib_map*CONVERSION_FACTORS['CIB'][self.fmt_freq(freq)]
+        return cib_map * get_cib_conversion_factor(freq)
 
     def get_radio_ps_temp(self, freq):
         ps_map = self.get_radio_ps_map(freq)
@@ -947,3 +1255,140 @@ class WebSky(CMBSky):
             cmb_alms = change_alm_lmax(
                 cmb_alms, lmax)
         return cmb_alms
+
+
+class AgoraSky(CMBSky):
+    """
+    Apparently these sims are in galactic coordinates. I'm not
+    sure if this matters....
+    """
+    nside=4096
+    def __init__(self,
+                 data_dir):
+        print("initalising AgoraSky with data_dir %s"%data_dir)
+        super().__init__(data_dir)
+
+    def get_cib_flux_mask(self, freq, flux_cut):
+        """
+        Get a mask which excludes regions with
+        flux greater than flux_cut, in mJY.
+        """
+        cib_temp = self.get_cib_temp(freq)
+        cib_flux_density_MJy = cib_temp / get_cib_conversion_factor(freq)
+        return self.get_flux_mask(
+            cib_flux_density_MJy, flux_cut)
+        
+    def get_cib_temp_old(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "cib", "planck",
+                           "len/uk", "mdpl2_len_mag_cibmap_planck_%d_uk.fits"%int(freq)
+                           )
+        elif freq in ["150"]:
+            filename = opj(self.data_dir, "cib", "act",
+                           "len/uk", "mdpl2_len_mag_cibmap_act_%d_uk.fits"%int(freq)
+                           )
+        elif freq=="90":
+            filename = opj(self.data_dir, "cib", "act",
+                           "len/uk", "mdpl2_len_mag_cibmap_act_%d_uk.fit"%int(freq)
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+
+    def get_allfg_temp(self, freq):
+        if freq in ["217", "353", "545"]:
+            allfg_filename = opj(self.data_dir, "planck",
+                           "agora_planck_%dghz_lcmbNG_lcibNG_ltszNGbahamas80scaled1.000_lkszNGbahamas80_lradNG_uk.fits"%int(freq)
+                           )
+            cmb_filename = opj(self.data_dir, "act",
+                               "agora_act_220ghz_lcmbNG_uk.fits"
+                               )
+        else:
+            allfg_filename = opj(self.data_dir, "act",
+                           "agora_act_%dghz_lcmbNG_lcibNG_ltszNGbahamas80_lkszNGbahamas80_lradNG_uk.fits"%int(freq)
+                           )
+            cmb_filename = opj(self.data_dir, "act",
+                               "agora_act_220ghz_lcmbNG_uk.fits"
+                               )
+        return hp.ud_grade(
+            hp.read_map(allfg_filename)-hp.read_map(cmb_filename), self.nside)
+    
+    def get_cib_temp(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "planck",
+                           "agora_planck_%sghz_lcibNG_uk.fits"%freq
+                           )
+        else:
+            filename = opj(self.data_dir, "act",
+                           "agora_act_%sghz_lcibNG_uk.fits"%int(freq)
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+
+    def get_tsz_temp(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "planck",
+                           "agora_planck_%sghz__ltszNGbahamas80scaled1.000_uk.fits"%freq)
+                           
+        else:
+            filename = opj(self.data_dir, "act",
+                           "agora_act_%sghz_ltszNGbahamas80_uk.fits"%freq)
+                           
+        return hp.ud_grade(hp.read_map(filename), self.nside)
+
+    def get_radio_ps_temp(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "planck",
+                           "agora_planck_%sghz_lradNG_uk.fits"%freq
+                           )
+        else:
+            filename = opj(self.data_dir, "act",
+                           "agora_act_%sghz_lradNG_uk.fits"%int(freq)
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+    def get_ksz_temp(self):
+        filename = opj(self.data_dir, "act",
+                           "agora_act_90ghz_lkszNGbahamas80_uk.fits"
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+    def get_cmb_lensed_orig_alms(self, lmax=None, survey_mask_hpix=None):
+        filename = opj(self.data_dir, "act", "agora_act_150ghz_lcmbNG_uk.fits")
+        m = hp.ud_grade(hp.read_map(filename), self.nside)
+        if survey_mask_hpix is not None:
+            m *= hp.ud_grade(survey_mask_hpix, 4096)
+            
+        cmb_alms = hp.map2alm(m, lmax=lmax)
+        return cmb_alms
+    
+class WebSkyOld(WebSky):
+    def __init__(self,
+                 data_dir,
+                 halo_catalog_name = 'halos.pksc',
+                 kappa_map_name = 'kap.fits',
+                 comptony_map_name = 'tsz_old.fits',
+                 ksz_map_name = 'ksz.fits',
+                 websky_cosmo = {'Omega_M': 0.31, 'Omega_B': 0.049, 'Omega_L': 0.69, 
+                                 'h': 0.68, 'sigma_8': 0.81, 'n_s':0.965},
+    ):
+        super().__init__(data_dir, halo_catalog_name=halo_catalog_name,
+                         kappa_map_name=kappa_map_name, comptony_map_name=comptony_map_name,
+                         ksz_map_name=ksz_map_name, websky_cosmo=websky_cosmo)
+    """
+    def cib_map_file_name(self, freq='545'):
+        cib_file_name = "cib_ns4096_nu%s.fits"%self.fmt_freq(freq)
+        return opj(self.data_dir, cib_file_name)
+    """
+
+    def get_tsz_temp(self, freq):
+        fn = self.comptony_map_file_name()
+        y_map = hp.read_map(fn)
+        return y_map*CONVERSION_FACTORS['Y'][self.fmt_freq(freq)]
