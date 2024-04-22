@@ -26,16 +26,26 @@ class ClBinner(object):
     Class for binning Cls in equal
     width bins, weighting by 2L+1
     """
-    def __init__(self, lmin=100, lmax=1000, nbin=20):
+    def __init__(self, lmin=100, lmax=1000, nbin=20, log=False):
         self.lmin=lmin
         self.lmax=lmax
         self.nbin=nbin
-        self.bin_lims = np.ceil(np.linspace(
-            self.lmin, self.lmax+1, self.nbin+1
-        )).astype(int)
+        if log:
+            log_bin_lims = np.linspace(
+                np.log(lmin), np.log(lmax), nbin+1)
+            #need to make this integers
+            bin_lims = np.ceil(np.exp(log_bin_lims))
+            log_bin_lims = np.log(bin_lims)
+            log_bin_mids = 0.5*(log_bin_lims[:-1]+log_bin_lims[1:])
+            self.bin_lims = np.exp(log_bin_lims).astype(int)
+            self.bin_mids = np.exp(log_bin_mids)
+        else:
+            self.bin_lims = np.ceil(np.linspace(
+                self.lmin, self.lmax+1, self.nbin+1
+            )).astype(int)
+            self.bin_mids = 0.5*(self.bin_lims[:-1]
+                                 +self.bin_lims[1:])
         self.deltal = np.diff(self.bin_lims)
-        self.bin_mids = 0.5*(self.bin_lims[:-1]
-                             +self.bin_lims[1:])
         
     def __call__(self, cl):
         L = np.arange(len(cl)).astype(int)
@@ -2718,7 +2728,7 @@ def test_secondary(use_mpi=False, nsim=10, from_pkl=False):
         fig,ax=plt.subplots(figsize=(5,4))
         
         ax.errorbar(0.95*ell_mids, S_raw_mean-S_gaussian_mean,
-                    yerr=np.sqrt(S_raw_err**2+S_gaussian_err**2),
+                    yerr=np.sqrt(S_raw_err**2+S_gaussian_err**2
                     linestyle='-', color='C0', label="brute force")
         
         ax.plot(0.95*ell_mids, cl_dict["S_fast"], '--', color='C0', label="fast")

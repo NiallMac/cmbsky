@@ -372,7 +372,7 @@ class CMBSky(object):
                 ))
     
     def get_sky(self, freq, cmb=True, cib=False, tsz=False,
-                ksz=False, rksz=False, radiops=False,
+                ksz=False, rksz=False, radiops=False, allfg=False,
                 cmb_unlensed_alms=None,
                 cmb_alms=None, lmax=4000,
                 fg_mask=None, mean_fill_fgs=True,
@@ -387,6 +387,18 @@ class CMBSky(object):
         has_fgs = False
         if fg_mask is None:
             fg_mask = np.ones_like(fg_map, dtype=bool)
+
+        if allfg:
+            print("doing allfg")
+            allfg_temp = self.get_allfg_temp(freq)
+            if source_flux_cut is not None:
+                print("cutting allfg flux > %.2f mJY at %s GHz"%(source_flux_cut, flux_cut_freq))
+                flux_density_MJy = allfg_temp / get_cib_conversion_factor(freq)
+                flux_mask = self.get_flux_mask(
+                    flux_density_MJy, source_flux_cut)
+                allfg_temp[~flux_mask] = (allfg_temp[flux_mask]).mean()
+            fg_map += allfg_temp
+            has_fgs = True
             
         if cib:
             cib_temp = self.get_cib_temp(freq)
@@ -462,6 +474,7 @@ class CMBSky(object):
                     hp.map2alm(fg_map_beamed, lmax=lmax),
                     1./bl[:lmax+1]
                     )
+                fg_map = hp.alm2map(fg_alms, self.nside)
         else:
             if survey_mask_hpix is not None:
                 fg_map *= survey_mask_hpix
@@ -493,7 +506,8 @@ class CMBSky(object):
                 fg_alms = hp.map2alm(fg_map, lmax=lmax)
 
         outputs["fg_alms"] = fg_alms
-
+        outputs["fg_map_hpix"] = fg_map
+        
         if cmb:
             if cmb_alms is None:
                 if (cmb_unlensed_alms is None):
@@ -725,7 +739,7 @@ class SehgalSky(CMBSky):
 
         """
         lensed_cmb = hp.read_map(
-                opj("/global/project/projectdirs/act/data/maccrann/sehgal",
+                opj("/global/cfs/projectdirs/act/data/maccrann/sehgal",
                     "Sehgalsimparams_healpix_4096_KappaeffLSStoCMBfullsky_phi_SimLens_Tsynfastnopell_fast_lmax8000_nside4096_interp2.5_method1_1_lensed_map.fits")
             )
         if survey_mask_hpix is not None:
@@ -860,7 +874,7 @@ class Sehgal10Sky(SehgalSky):
         lensed cmb alms
         """
         lensed_cmb = hp.read_map(
-                opj("/global/project/projectdirs/act/data/maccrann/sehgal",
+                opj("/global/cfs/projectdirs/act/data/maccrann/sehgal",
                     "Sehgalsimparams_healpix_4096_KappaeffLSStoCMBfullsky_phi_SimLens_Tsynfastnopell_fast_lmax8000_nside4096_interp2.5_method1_1_lensed_map.fits")
             )
         if survey_mask_hpix is not None:
@@ -1242,6 +1256,119 @@ class WebSky(CMBSky):
                 cmb_alms, lmax)
         return cmb_alms
 
+
+class AgoraSky(CMBSky):
+    """
+    Apparently these sims are in galactic coordinates. I'm not
+    sure if this matters....
+    """
+    nside=4096
+    def __init__(self,
+                 data_dir):
+        print("initalising AgoraSky with data_dir %s"%data_dir)
+        super().__init__(data_dir)
+
+    def get_cib_flux_mask(self, freq, flux_cut):
+        """
+        Get a mask which excludes regions with
+        flux greater than flux_cut, in mJY.
+        """
+        cib_temp = self.get_cib_temp(freq)
+        cib_flux_density_MJy = cib_temp / get_cib_conversion_factor(freq)
+        return self.get_flux_mask(
+            cib_flux_density_MJy, flux_cut)
+        
+    def get_cib_temp_old(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "cib", "planck",
+                           "len/uk", "mdpl2_len_mag_cibmap_planck_%d_uk.fits"%int(freq)
+                           )
+        elif freq in ["150"]:
+            filename = opj(self.data_dir, "cib", "act",
+                           "len/uk", "mdpl2_len_mag_cibmap_act_%d_uk.fits"%int(freq)
+                           )
+        elif freq=="90":
+            filename = opj(self.data_dir, "cib", "act",
+                           "len/uk", "mdpl2_len_mag_cibmap_act_%d_uk.fit"%int(freq)
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+
+    def get_allfg_temp(self, freq):
+        if freq in ["217", "353", "545"]:
+            allfg_filename = opj(self.data_dir, "planck",
+                           "agora_planck_%dghz_lcmbNG_lcibNG_ltszNGbahamas80scaled1.000_lkszNGbahamas80_lradNG_uk.fits"%int(freq)
+                           )
+            cmb_filename = opj(self.data_dir, "act",
+                               "agora_act_220ghz_lcmbNG_uk.fits"
+                               )
+        else:
+            allfg_filename = opj(self.data_dir, "act",
+                           "agora_act_%dghz_lcmbNG_lcibNG_ltszNGbahamas80_lkszNGbahamas80_lradNG_uk.fits"%int(freq)
+                           )
+            cmb_filename = opj(self.data_dir, "act",
+                               "agora_act_220ghz_lcmbNG_uk.fits"
+                               )
+        return hp.ud_grade(
+            hp.read_map(allfg_filename)-hp.read_map(cmb_filename), self.nside)
+    
+    def get_cib_temp(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "planck",
+                           "agora_planck_%sghz_lcibNG_uk.fits"%freq
+                           )
+        else:
+            filename = opj(self.data_dir, "act",
+                           "agora_act_%sghz_lcibNG_uk.fits"%int(freq)
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+
+    def get_tsz_temp(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "planck",
+                           "agora_planck_%sghz__ltszNGbahamas80scaled1.000_uk.fits"%freq)
+                           
+        else:
+            filename = opj(self.data_dir, "act",
+                           "agora_act_%sghz_ltszNGbahamas80_uk.fits"%freq)
+                           
+        return hp.ud_grade(hp.read_map(filename), self.nside)
+
+    def get_radio_ps_temp(self, freq):
+        if freq in ["353","545"]:
+            filename = opj(self.data_dir, "planck",
+                           "agora_planck_%sghz_lradNG_uk.fits"%freq
+                           )
+        else:
+            filename = opj(self.data_dir, "act",
+                           "agora_act_%sghz_lradNG_uk.fits"%int(freq)
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+    def get_ksz_temp(self):
+        filename = opj(self.data_dir, "act",
+                           "agora_act_90ghz_lkszNGbahamas80_uk.fits"
+                           )
+
+        return hp.ud_grade(
+            hp.read_map(filename), self.nside)
+
+    def get_cmb_lensed_orig_alms(self, lmax=None, survey_mask_hpix=None):
+        filename = opj(self.data_dir, "act", "agora_act_150ghz_lcmbNG_uk.fits")
+        m = hp.ud_grade(hp.read_map(filename), self.nside)
+        if survey_mask_hpix is not None:
+            m *= hp.ud_grade(survey_mask_hpix, 4096)
+            
+        cmb_alms = hp.map2alm(m, lmax=lmax)
+        return cmb_alms
+    
 class WebSkyOld(WebSky):
     def __init__(self,
                  data_dir,
